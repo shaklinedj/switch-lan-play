@@ -68,6 +68,10 @@ int parse_arguments(int argc, char **argv)
     options.netif_ipaddr = NULL;
     options.netif_netmask = NULL;
 
+    options.server_ip = NULL;
+    options.subnet_net = NULL;
+    options.subnet_mask = NULL;
+
     options.relay_server_addr = NULL;
     options.relay_username = NULL;
     options.relay_password = NULL;
@@ -93,10 +97,18 @@ int parse_arguments(int argc, char **argv)
             CHECK_PARAM();
             options.netif = strdup(argv[i + 1]);
             i++;
-        // } else if (!strcmp(arg, "--netif-netmask")) {
-        //     CHECK_PARAM();
-        //     options.netif_netmask = argv[i + 1];
-        //     i++;
+        } else if (!strcmp(arg, "--server-ip")) {
+            CHECK_PARAM();
+            options.server_ip = argv[i + 1];
+            i++;
+        } else if (!strcmp(arg, "--subnet-net")) {
+            CHECK_PARAM();
+            options.subnet_net = argv[i + 1];
+            i++;
+        } else if (!strcmp(arg, "--subnet-mask")) {
+            CHECK_PARAM();
+            options.subnet_mask = argv[i + 1];
+            i++;
         } else if (!strcmp(arg, "--relay-server-addr")) {
             CHECK_PARAM();
             options.relay_server_addr = argv[i + 1];
@@ -156,7 +168,7 @@ int parse_arguments(int argc, char **argv)
             options.rpc_protocol = argv[i + 1];
             i++;
         } else {
-            LLOG(LLOG_WARNING, "unknown paramter: %s", arg);
+            LLOG(LLOG_WARNING, "unknown parameter: %s", arg);
         }
     }
 
@@ -207,7 +219,9 @@ void print_help(const char *name)
         "        [--broadcast]\n"
         "        [--fake-internet]\n"
         "        [--netif <interface>] default: all\n"
-        // "        [--netif-netmask <ipnetmask>] default: 255.255.0.0\n"
+        "        [--server-ip <ip>] default: " SERVER_IP "\n"
+        "        [--subnet-net <net>] default: " SUBNET_NET "\n"
+        "        [--subnet-mask <mask>] default: " SUBNET_MASK "\n"
         "        [--relay-server-addr <addr>]\n"
         "        [--username <username>]\n"
         "        [--password <password>]\n"
@@ -217,13 +231,12 @@ void print_help(const char *name)
         "        [--socks5-server-addr <addr>]\n"
         "        [--rpc <address>]\n"
         "        [--rpc-token <token>]\n"
-        "        [--rpc-protocol <rpc protocl>]\n"
-        // "        [--socks5-username <username>]\n"
-        // "        [--socks5-password <password>]\n"
-        // "        [--socks5-password-file <file>]\n"
-        "Address format is a.b.c.d:port (IPv4).\n"
+        "        [--rpc-protocol <rpc protocol>]\n"
+        "Address format is a.b.c.d:port or domain:port (IPv4).\n"
+        "Port may be omitted and defaults to %d.\n"
         "RPC protocol could be tcp, ws. Default to ws.\n",
-        name
+        name,
+        SERVER_PORT
     );
 }
 

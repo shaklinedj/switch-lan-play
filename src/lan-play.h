@@ -96,6 +96,10 @@ struct cli_options {
     char *netif;
     char *netif_netmask;
 
+    char *server_ip;
+    char *subnet_net;
+    char *subnet_mask;
+
     char *relay_server_addr;
     char *relay_username;
     char *relay_password;

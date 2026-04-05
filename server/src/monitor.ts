@@ -15,8 +15,8 @@ export class ServerMonitor {
         await next()
       } catch (err) {
         console.error(err)
-
-        ctx.status = err.statusCode || err.status || 500
+        const anyErr = err as any
+        ctx.status = anyErr?.statusCode || anyErr?.status || 500
         ctx.body = {
           error: 'server exceptions'
         }
