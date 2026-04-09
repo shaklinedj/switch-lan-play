@@ -106,7 +106,9 @@ CHAR64LONG16* block = (const CHAR64LONG16*)buffer;
     /* Wipe variables */
     a = b = c = d = e = 0;
 #ifdef SHA1HANDSOFF
-    memset(block, '\0', sizeof(block));
+    /* Use a volatile pointer so the compiler cannot optimize away the wipe */
+    volatile unsigned char *vblock = (volatile unsigned char *)block;
+    for (size_t _wi = 0; _wi < sizeof(block[0]); _wi++) vblock[_wi] = 0;
 #endif
 }
 

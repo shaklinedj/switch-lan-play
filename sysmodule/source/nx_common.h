@@ -90,7 +90,7 @@ void nx_log(int level, const char *fmt, ...);
 #define CPY_IPV4(a,b)   memcpy((a),(b),4)
 #define CPY_MAC(a,b)    memcpy((a),(b),6)
 #define CMP_IPV4(a,b)   (memcmp((a),(b),4)==0)
-#define CMP_MAC(a,b)    (memcmp((a),(b),4)==0)
+#define CMP_MAC(a,b)    (memcmp((a),(b),6)==0)
 
 #define IS_SUBNET(ip,net,mask) \
     (((*(uint32_t*)(ip)) & (*(uint32_t*)(mask))) == *(uint32_t*)(net))

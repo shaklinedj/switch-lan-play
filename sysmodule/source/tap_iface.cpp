@@ -157,9 +157,10 @@ void tap_recv_thread_fn(void *arg)
 {
     struct lan_play *lp = (struct lan_play *)arg;
 
-    /* Receive buffer: 14-byte synthetic Ethernet header + MTU IP payload */
-    static uint8_t eth_buf[ETHER_HEADER_LEN + TAP_BUF_SIZE];
-    static uint8_t ip_buf[TAP_BUF_SIZE];
+    /* Receive buffer: 14-byte synthetic Ethernet header + MTU IP payload.
+     * Allocated on the stack to avoid sharing state between thread invocations. */
+    uint8_t eth_buf[ETHER_HEADER_LEN + TAP_BUF_SIZE];
+    uint8_t ip_buf[TAP_BUF_SIZE];
 
     /* Pre-build the Ethernet header template:
      *   dst = broadcast (FF:FF:FF:FF:FF:FF) — will be filled by ARP logic
