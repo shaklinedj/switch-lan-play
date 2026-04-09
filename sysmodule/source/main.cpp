@@ -149,15 +149,17 @@ int main(int argc, char *argv[])
     /* ------------------------------------------------------------------ */
     nx_config_t cfg;
     if (nx_config_load(&cfg) != 0) {
-        LLOG(LLOG_WARNING,
-             "Config missing or invalid.  Writing default config and exiting.");
+        LLOG(LLOG_WARNING, "Config missing or relay_addr not set.");
         nx_config_write_default();
         LLOG(LLOG_INFO,
-             "Edit sdmc:/config/lan-play/config.ini then reboot.");
-        /* Keep the sysmodule alive so log messages are visible */
+             "Run the 'LanPlay Setup' homebrew app to configure the server, "
+             "or edit sdmc:/config/lan-play/config.ini then reboot.");
         svcSleepThread(30000000000LL); /* 30 s */
         return 0;
     }
+
+    /* Auto-assign a unique IP from the device serial if not set in config */
+    nx_config_auto_ip(&cfg);
 
     /* ------------------------------------------------------------------ */
     /* 2. Allocate & zero the main context                                  */

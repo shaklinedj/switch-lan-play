@@ -24,9 +24,9 @@ static void trim(char *s)
 static void set_defaults(nx_config_t *cfg)
 {
     memset(cfg, 0, sizeof(*cfg));
-    strncpy(cfg->my_ip,       NX_CONFIG_IP_DEF,  NX_IP_MAX  - 1);
-    strncpy(cfg->subnet_net,  SUBNET_NET,         NX_IP_MAX  - 1);
-    strncpy(cfg->subnet_mask, SUBNET_MASK,        NX_IP_MAX  - 1);
+    /* ip is intentionally left empty — auto_ip fills it in */
+    strncpy(cfg->subnet_net,  SUBNET_NET,  NX_IP_MAX - 1);
+    strncpy(cfg->subnet_mask, SUBNET_MASK, NX_IP_MAX - 1);
 }
 
 int nx_config_load(nx_config_t *cfg)
@@ -78,10 +78,55 @@ int nx_config_load(nx_config_t *cfg)
         return -1;
     }
 
-    LLOG(LLOG_INFO, "config: relay=%s ip=%s", cfg->relay_addr, cfg->my_ip);
+    LLOG(LLOG_INFO, "config: relay=%s ip=%s",
+         cfg->relay_addr, cfg->my_ip[0] ? cfg->my_ip : "(auto)");
     return 0;
 }
 
+/* --------------------------------------------------------------------------
+ * Auto-IP: deterministic unique IP in 10.13.1.1 – 10.13.254.254
+ * derived from the device serial number via FNV-1a hash.
+ * Avoids the virtual gateway address 10.13.37.1 and the .0 / .255
+ * boundary addresses.
+ * -------------------------------------------------------------------------- */
+void nx_config_auto_ip(nx_config_t *cfg)
+{
+    if (cfg->my_ip[0] != '\0') return; /* already set in config file */
+
+    /* FNV-1a hash of the device serial number */
+    SetSysSerialNumber serial;
+    uint32_t h = 0x811c9dc5u;
+    if (R_SUCCEEDED(setsysGetSerialNumber(&serial))) {
+        for (size_t i = 0; i < sizeof(serial.number) && serial.number[i]; i++) {
+            h ^= (uint8_t)serial.number[i];
+            h *= 0x01000193u;
+        }
+    } else {
+        /* Fallback: use a second hash from a different seed */
+        h = 0x5851f42du;
+    }
+
+    /* Map to 10.13.X.Y
+     * X in [1, 254], Y in [1, 254], excluding 37.1 (virtual gateway) */
+    uint8_t x = (h >> 8) & 0xFF;
+    uint8_t y =  h        & 0xFF;
+
+    if (x == 0)   x = 1;
+    if (x == 255) x = 254;
+    if (y == 0)   y = 1;
+    if (y == 255) y = 254;
+
+    /* Don't collide with the virtual gateway 10.13.37.1 */
+    if (x == 37 && y == 1) y = 2;
+
+    snprintf(cfg->my_ip, NX_IP_MAX, "10.13.%u.%u", (unsigned)x, (unsigned)y);
+    LLOG(LLOG_INFO, "config: auto-assigned IP %s", cfg->my_ip);
+}
+
+/* --------------------------------------------------------------------------
+ * Write a minimal config template — only relay_addr is required from the
+ * user.  Everything else is handled automatically.
+ * -------------------------------------------------------------------------- */
 int nx_config_write_default(void)
 {
     /* Create directory if needed */
@@ -94,28 +139,79 @@ int nx_config_write_default(void)
     }
 
     fprintf(f,
-        "; switch-lan-play sysmodule configuration\n"
-        "; Edit this file with a text editor on your PC, then put the SD\n"
-        "; card back in the Switch and reboot.\n"
+        "; switch-lan-play configuration\n"
+        "; Use the LanPlay Setup homebrew app to configure this file,\n"
+        "; or edit it manually and reboot.\n"
         "\n"
         "[server]\n"
-        "; Address of the relay server (domain:port or ip:port)\n"
+        "; Address of the relay server (host:port or just host for default port)\n"
         "relay_addr = YOUR_SERVER:11451\n"
         "\n"
-        "[network]\n"
-        "; IP address the Switch will use for LAN play (10.13.0.0/16 range)\n"
-        "; Each player needs a DIFFERENT IP in the same subnet.\n"
-        "ip = 10.13.0.1\n"
-        "subnet_net  = 10.13.0.0\n"
-        "subnet_mask = 255.255.0.0\n"
-        "\n"
-        "[auth]\n"
-        "; Optional: only needed if your relay server requires a password\n"
+        "; Optional: only needed if the server requires a password\n"
         "; username =\n"
         "; password =\n"
+        "\n"
+        "; Advanced: manually pin the virtual IP (leave commented for auto)\n"
+        "; ip = 10.13.1.1\n"
     );
 
     fclose(f);
     LLOG(LLOG_INFO, "config: default config written to %s", NX_CONFIG_PATH);
+    return 0;
+}
+
+/* --------------------------------------------------------------------------
+ * nx_config_save_relay — atomically replace only the relay_addr line.
+ * Used by the homebrew configurator NRO so it doesn't clobber auth settings.
+ * -------------------------------------------------------------------------- */
+int nx_config_save_relay(const char *relay_addr)
+{
+    /* Create directory */
+    mkdir(NX_CONFIG_DIR, 0777);
+
+    /* Read current file (if any) into memory */
+    char lines[64][512];
+    int  nlines = 0;
+    bool found  = false;
+
+    FILE *r = fopen(NX_CONFIG_PATH, "r");
+    if (r) {
+        while (nlines < 63 && fgets(lines[nlines], 512, r))
+            nlines++;
+        fclose(r);
+    }
+
+    /* Locate an existing relay_addr line and update it */
+    for (int i = 0; i < nlines; i++) {
+        char tmp[512];
+        strncpy(tmp, lines[i], 511);
+        trim(tmp);
+        if (strncmp(tmp, "relay_addr", 10) == 0 && strchr(tmp, '=')) {
+            snprintf(lines[i], 512, "relay_addr = %s\n", relay_addr);
+            found = true;
+            break;
+        }
+    }
+
+    /* Not found: append (or write fresh) */
+    if (!found) {
+        if (nlines == 0) {
+            /* Fresh file */
+            snprintf(lines[nlines++], 512, "; switch-lan-play configuration\n");
+            snprintf(lines[nlines++], 512, "[server]\n");
+        }
+        snprintf(lines[nlines++], 512, "relay_addr = %s\n", relay_addr);
+    }
+
+    FILE *w = fopen(NX_CONFIG_PATH, "w");
+    if (!w) {
+        LLOG(LLOG_ERROR, "config: cannot write %s", NX_CONFIG_PATH);
+        return -1;
+    }
+    for (int i = 0; i < nlines; i++)
+        fputs(lines[i], w);
+    fclose(w);
+
+    LLOG(LLOG_INFO, "config: relay_addr saved as '%s'", relay_addr);
     return 0;
 }
