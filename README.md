@@ -1,138 +1,320 @@
 # switch-lan-play
-[![Build status](https://github.com/spacemeowx2/switch-lan-play/workflows/Build/badge.svg)](https://github.com/spacemeowx2/switch-lan-play/actions?query=workflow%3ABuild)
-[![Chat on discord](https://img.shields.io/badge/chat-on%20discord-7289da.svg)](https://discord.gg/zEMCu5n)
 
-English | [中文](README_zh.md)
+[![Estado del build](https://github.com/spacemeowx2/switch-lan-play/workflows/Build/badge.svg)](https://github.com/spacemeowx2/switch-lan-play/actions?query=workflow%3ABuild)
+[![Chat en Discord](https://img.shields.io/badge/chat-en%20discord-7289da.svg)](https://discord.gg/zEMCu5n)
 
-Enjoy games with your friends as if you were on a LAN.
+Juega con tus amigos en modo multijugador local (LAN) a través de internet.
+
+---
+
+## Tabla de contenidos
+
+1. [¿Cómo funciona?](#cómo-funciona)
+2. [Uso rápido — Switch (sin PC)](#uso-rápido--switch-sin-pc)
+3. [Servidor relay](#servidor-relay)
+4. [Cliente PC (modo alternativo)](#cliente-pc-modo-alternativo)
+5. [Compilación](#compilación)
+   - [Cliente PC](#compilar-el-cliente-pc)
+   - [Sysmodule Switch](#compilar-el-sysmodule-switch)
+   - [App configuradora (homebrew)](#compilar-la-app-configuradora-homebrew)
+6. [Configuración avanzada](#configuración-avanzada)
+7. [Protocolo](#protocolo)
+8. [Solución de problemas](#solución-de-problemas)
+
+---
+
+## ¿Cómo funciona?
 
 ```
-                     Internet
-                        |
-                  [SOCKS5 Proxy] (optional)
-                        |
-        ARP,IPv4        |          LAN Packets
-Switch <-------->  PC(lan-play)  <-------------> Server
-                                       UDP
+Switch A (juego en modo LAN)          Switch B (juego en modo LAN)
+      |                                       |
+  sysmodule                               sysmodule
+      |          UDP por WiFi               |
+      +---------> Servidor relay <----------+
+                  (IP pública)
 ```
 
-# Usage
+Cada Switch obtiene automáticamente una **IP virtual única** en el rango `10.13.0.0/16`
+(calculada a partir del número de serie del dispositivo).  
+El servidor relay reenvía los paquetes entre todos los jugadores conectados.  
+El juego cree que todos están en la misma red local — sin necesidad de configurar IPs manualmente.
 
-To play with your friends, both you and your friends need to run the lan-play client connecting to the **same** Server on your PCs, and set static IP on your Switch.
+> **¿Por qué `10.13.x.x`?**  
+> Es una dirección privada de uso interno, únicamente visible dentro del túnel virtual.
+> Tu Switch sigue usando su IP real de WiFi (por ejemplo `192.168.1.50`) para llegar al servidor.
+> La IP `10.13.x.x` es la que *los juegos* usan para reconocerse entre sí.
 
-Your PC and Switch **must** be connected to the same router.
+---
 
-Visit [https://www.lan-play.com/](http://lan-play.com/install-switch) for instructions on how to set this up. See below for build instructions.
+## Uso rápido — Switch (sin PC)
 
-## SOCKS5 Proxy
+> Requiere Nintendo Switch con **Atmosphere CFW** y conexión WiFi.
 
-lan-play --socks5-server-addr example.com:1080
+### Paso 1 — Instalar en la tarjeta SD
 
-Data sent to the relay server does not pass through the proxy.
+Copia las carpetas `atmosphere/` y `switch/` del release a la **raíz de tu tarjeta SD**
+y reinicia la Switch.
 
-# Build
+```
+sdmc:/
+├── atmosphere/
+│   └── contents/
+│       └── 010000000000FF01/
+│           ├── exefs/
+│           │   ├── main           ← sysmodule NSO
+│           │   └── main.npdm      ← permisos
+│           └── flags/
+│               └── boot2.flag     ← arranque automático
+└── switch/
+    └── lanplay-setup/
+        └── lanplay-setup.nro      ← app configuradora
+```
 
-## Debug or Release
+### Paso 2 — Configurar el servidor
 
-`cmake -DCMAKE_BUILD_TYPE=Debug ..`
-`cmake -DCMAKE_BUILD_TYPE=Release ..`
+1. Abre el **Homebrew Menu** en tu Switch.
+2. Lanza **"LanPlay Setup"**.
+3. Pulsa **A**, escribe la dirección del servidor relay (p. ej. `relay.ejemplo.com:11451`) y pulsa **+** para confirmar.
+4. Reinicia la Switch.
 
-## Ubuntu / Debian
+¡Listo! No hace falta ajustar IPs, no hace falta ningún PC.
 
-This project depends on libpcap, you can install libpcap0.8-dev on Ubuntu or Debian:
+> **Primera vez sin configuración:** el sysmodule crea el archivo de config automáticamente
+> y muestra un aviso en pantalla. Abre "LanPlay Setup" para rellenarlo.
 
-`sudo apt install libpcap0.8-dev git gcc g++ cmake`
+### Archivo de configuración (opcional / avanzado)
 
-Prepare cmake and gcc, then run the following:
+Ubicación: `sdmc:/config/lan-play/config.ini`
+
+```ini
+[server]
+relay_addr = relay.ejemplo.com:11451
+
+; Opcional: autenticación (si el servidor lo requiere)
+; username = miusuario
+; password = miclave
+
+; Opcional: fijar una IP virtual específica (por defecto se genera automáticamente)
+; ip = 10.13.5.10
+```
+
+---
+
+## Servidor relay
+
+El servidor escucha en el puerto `11451/UDP` y reenvía paquetes entre las consolas conectadas.
+Requiere una IP pública accesible por tus jugadores.
+
+### Opción A — Docker (recomendado)
 
 ```sh
-mkdir build
-cd build
-cmake ..
-make
+docker run -d \
+  -p 11451:11451/udp \
+  -p 11451:11451/tcp \
+  spacemeowx2/switch-lan-play
 ```
 
-## Windows
-
-Use [MSYS2](http://www.msys2.org/) to compile.
+Con `docker compose` (desde la carpeta `server/`):
 
 ```sh
-pacman -Sy
-pacman -S make \
-    mingw-w64-x86_64-cmake \
-    mingw-w64-x86_64-gcc
+cd server
+docker compose up -d
 ```
 
-To compile a 32-bit program:
-
-```sh
-pacman -S mingw-w64-i686-cmake \
-    mingw-w64-i686-gcc
-```
-
-Open `MSYS2 MinGW 64-bit` or `MSYS2 MinGW 32-bit`.
-
-```sh
-mkdir build
-cd build
-cmake -G "MSYS Makefiles" ..
-make
-```
-
-## Mac OS
-
-```sh
-brew install cmake
-```
-
-```sh
-mkdir build
-cd build
-cmake ..
-make
-```
-
-# Server
-
-## Docker
-
-`docker run -d -p 11451:11451/udp -p 11451:11451/tcp spacemeowx2/switch-lan-play`
-
-## Node
+### Opción B — Node.js directamente
 
 ```sh
 git clone https://github.com/spacemeowx2/switch-lan-play
 cd switch-lan-play/server
 npm install
-npm run build # build ts to js. run it again when code changes.
+npm run build
 npm start
 ```
 
-Use `--port` to pass the port parameter, or it will use `11451/udp` as the default.
+Opciones disponibles:
 
-Use `--simpleAuth` to pass authentication via username and password, or there will be no authentication.
+| Parámetro | Descripción |
+|-----------|-------------|
+| `--port 11451` | Puerto UDP (por defecto `11451`) |
+| `--simpleAuth usuario:contraseña` | Autenticación básica |
+| `--jsonAuth ./users.json` | Autenticación por archivo JSON |
+| `--httpAuth https://...` | Autenticación por HTTP externo |
 
-Use `--httpAuth` to pass authentication via HTTP URL, or there will be no authentication.
-
-Use `--jsonAuth` to pass authentication via JSON file, or there will be no authentication.
-
-Example:
+Ejemplo con autenticación y puerto personalizado:
 
 ```sh
-npm run build
-npm start -- --port 10086 --simpleAuth username:password
+npm start -- --port 11451 --simpleAuth admin:secreto
 ```
 
-Meanwhile, the monitor service will start on port `11451/tcp` by default. You can get the online client count via an HTTP request:
+### Monitor de estado
 
-Request: `GET http://{YOUR_SERVER_IP}:11451/info`
+El servidor también expone un endpoint HTTP en el mismo puerto TCP:
 
-Response: `{ "online": 42 }`
+```
+GET http://TU_IP_SERVIDOR:11451/info
+→ { "online": 5 }
+```
 
+### Puertos que deben estar abiertos
 
-# Protocol
+| Puerto | Protocolo | Uso |
+|--------|-----------|-----|
+| 11451 | **UDP** | Relay de partidas (**obligatorio**) |
+| 11451 | TCP | API de estado (opcional) |
 
-The protocol is quite simple at the moment, but additional fields may be added to calculate network quality (packet loss, ping), such as timestamp, seq_id, etc.
+### Opciones de hosting gratuito
+
+- **Oracle Cloud Free Tier** — 2 VMs ARM de 1 GB RAM para siempre (mejor opción).
+- **fly.io** — tier gratuito para hobbistas.
+- **Railway.app / Render.com** — desplegables con el Dockerfile incluido.
+
+---
+
+## Cliente PC (modo alternativo)
+
+Si prefieres usar el cliente de PC en lugar del sysmodule en la Switch:
+
+- Tu PC y tu Switch deben estar **en la misma red WiFi/LAN**.
+- Ejecuta el cliente en el PC conectándote al servidor relay.
+- En la Switch activa el modo LAN y asigna una IP estática en el rango `10.13.x.x`.
+
+```
+                       Internet
+                          |
+                  [Proxy SOCKS5] (opcional)
+                          |
+        ARP/IPv4          |          Paquetes LAN
+Switch <---------> PC (lan-play) <-------------> Servidor
+                                        UDP
+```
+
+### Usar proxy SOCKS5
+
+```sh
+lan-play --socks5-server-addr ejemplo.com:1080
+```
+
+> El tráfico hacia el servidor relay **no pasa** por el proxy.
+
+---
+
+## Compilación
+
+### Compilar el cliente PC
+
+#### Ubuntu / Debian
+
+```sh
+sudo apt install libpcap0.8-dev git gcc g++ cmake
+git clone https://github.com/spacemeowx2/switch-lan-play
+cd switch-lan-play
+mkdir build && cd build
+cmake ..
+make
+```
+
+Para modo Debug:
+
+```sh
+cmake -DCMAKE_BUILD_TYPE=Debug ..
+```
+
+Para modo Release:
+
+```sh
+cmake -DCMAKE_BUILD_TYPE=Release ..
+```
+
+#### Windows (MSYS2)
+
+Instala [MSYS2](http://www.msys2.org/) y luego:
+
+```sh
+# 64 bits
+pacman -Sy
+pacman -S make mingw-w64-x86_64-cmake mingw-w64-x86_64-gcc
+
+# Abre "MSYS2 MinGW 64-bit" y compila:
+mkdir build && cd build
+cmake -G "MSYS Makefiles" ..
+make
+```
+
+Para 32 bits usa `mingw-w64-i686-cmake` y `mingw-w64-i686-gcc` en "MSYS2 MinGW 32-bit".
+
+#### macOS
+
+```sh
+brew install cmake
+git clone https://github.com/spacemeowx2/switch-lan-play
+cd switch-lan-play
+mkdir build && cd build
+cmake ..
+make
+```
+
+---
+
+### Compilar el sysmodule Switch
+
+Requiere **devkitPro** con soporte para Switch:
+
+```sh
+# Instalar herramientas
+dkp-pacman -S switch-dev switch-atmo-tools
+
+# Compilar
+cd sysmodule
+make atmosphere
+# Resultado: carpeta atmosphere/ → copia a la raíz de la SD
+```
+
+---
+
+### Compilar la app configuradora (homebrew)
+
+```sh
+cd hbapp
+make
+# Resultado: lanplay-setup.nro
+# Instalar en: sdmc:/switch/lanplay-setup/lanplay-setup.nro
+```
+
+---
+
+## Configuración avanzada
+
+### Autenticación en el servidor
+
+Edita `server/users.json` (ver `users_schema.json` para el formato) e inicia con:
+
+```sh
+npm start -- --jsonAuth ./users.json
+```
+
+Los jugadores añaden en su `config.ini`:
+
+```ini
+username = miusuario
+password = miclave
+```
+
+### Fijar IP virtual en la Switch
+
+Por defecto la IP se genera automáticamente desde el número de serie.
+Para fijar una IP concreta edita `sdmc:/config/lan-play/config.ini`:
+
+```ini
+[server]
+relay_addr = relay.ejemplo.com:11451
+ip = 10.13.5.10
+```
+
+---
+
+## Protocolo
+
+El protocolo es simple: cada paquete lleva un byte de tipo seguido del payload.
 
 ```c
 struct packet {
@@ -143,11 +325,32 @@ struct packet {
 
 ```c
 enum type {
-    KEEPALIVE = 0,
-    IPV4 = 1,
-    PING = 2,
-    IPV4_FRAG = 3
+    KEEPALIVE  = 0,
+    IPV4       = 1,
+    PING       = 2,
+    IPV4_FRAG  = 3
 };
 ```
 
-The server can read IP addresses from the payload and save the source IP -> LAN IP to a cache table. If the target IP address shown in the payload doesn't match the cache, the packet is broadcast to the entire room.
+El servidor extrae la IP de destino del payload y la compara con su tabla de caché
+(IP origen → IP LAN virtual).  Si no hay coincidencia, el paquete se difunde
+a todos los clientes de la sala.
+
+---
+
+## Solución de problemas
+
+| Síntoma | Qué revisar |
+|---------|-------------|
+| El sysmodule no arranca | Verifica la versión de Atmosphere; comprueba que `boot2.flag` existe |
+| "LanPlay Setup" no aparece en hbmenu | Verifica que el NRO está en `sdmc:/switch/lanplay-setup/` |
+| Mensaje de "sin servidor configurado" al arrancar | Abre "LanPlay Setup" y configura `relay_addr` |
+| No resuelve el servidor relay | Comprueba que el WiFi funciona; revisa `relay_addr` en `config.ini` |
+| Latencia alta | Usa un servidor relay geográficamente cercano a todos los jugadores |
+| El cliente PC no detecta la Switch | Verifica que PC y Switch están en la misma red local |
+
+---
+
+## Licencia
+
+[MIT](LICENSE.txt)
