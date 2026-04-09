@@ -277,12 +277,17 @@ int parse_ip_port(const char *str, char *out_addr, size_t out_addr_len, uint16_t
         int i=0;
         while (i < len && str[i] != ':') i++;
         if (i >= len) {
-            return -1;
+            // No port specified: use the entire string as address and default port
+            addr_start = 0;
+            addr_len = len;
+            port_start = len;
+            port_len = 0;
+        } else {
+            addr_start = 0;
+            addr_len = i - addr_start;
+            port_start = i + 1;
+            port_len = len - port_start;
         }
-        addr_start = 0;
-        addr_len = i - addr_start;
-        port_start = i + 1;
-        port_len = len - port_start;
     }
 
     if (addr_len >= out_addr_len) {
@@ -290,6 +295,12 @@ int parse_ip_port(const char *str, char *out_addr, size_t out_addr_len, uint16_t
     }
     memcpy(out_addr, str + addr_start, addr_len);
     out_addr[addr_len] = '\0';
+
+    if (port_len == 0) {
+        // Default to SERVER_PORT when no port is given
+        *out_port = SERVER_PORT;
+        return 0;
+    }
 
     char port_str[6];
     if (port_len >= sizeof(port_str)) {
