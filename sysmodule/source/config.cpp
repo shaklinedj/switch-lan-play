@@ -164,30 +164,35 @@ int nx_config_write_default(void)
  * nx_config_save_relay — atomically replace only the relay_addr line.
  * Used by the homebrew configurator NRO so it doesn't clobber auth settings.
  * -------------------------------------------------------------------------- */
+#define MAX_CONFIG_LINES 64
+#define MAX_LINE_LEN     512
+
 int nx_config_save_relay(const char *relay_addr)
 {
     /* Create directory */
     mkdir(NX_CONFIG_DIR, 0777);
 
     /* Read current file (if any) into memory */
-    char lines[64][512];
+    char lines[MAX_CONFIG_LINES][MAX_LINE_LEN];
     int  nlines = 0;
     bool found  = false;
 
     FILE *r = fopen(NX_CONFIG_PATH, "r");
     if (r) {
-        while (nlines < 63 && fgets(lines[nlines], 512, r))
+        while (nlines < MAX_CONFIG_LINES - 1 &&
+               fgets(lines[nlines], MAX_LINE_LEN, r))
             nlines++;
         fclose(r);
     }
 
     /* Locate an existing relay_addr line and update it */
     for (int i = 0; i < nlines; i++) {
-        char tmp[512];
-        strncpy(tmp, lines[i], 511);
+        char tmp[MAX_LINE_LEN];
+        strncpy(tmp, lines[i], MAX_LINE_LEN - 1);
+        tmp[MAX_LINE_LEN - 1] = '\0';
         trim(tmp);
         if (strncmp(tmp, "relay_addr", 10) == 0 && strchr(tmp, '=')) {
-            snprintf(lines[i], 512, "relay_addr = %s\n", relay_addr);
+            snprintf(lines[i], MAX_LINE_LEN, "relay_addr = %s\n", relay_addr);
             found = true;
             break;
         }
@@ -197,10 +202,10 @@ int nx_config_save_relay(const char *relay_addr)
     if (!found) {
         if (nlines == 0) {
             /* Fresh file */
-            snprintf(lines[nlines++], 512, "; switch-lan-play configuration\n");
-            snprintf(lines[nlines++], 512, "[server]\n");
+            snprintf(lines[nlines++], MAX_LINE_LEN, "; switch-lan-play configuration\n");
+            snprintf(lines[nlines++], MAX_LINE_LEN, "[server]\n");
         }
-        snprintf(lines[nlines++], 512, "relay_addr = %s\n", relay_addr);
+        snprintf(lines[nlines++], MAX_LINE_LEN, "relay_addr = %s\n", relay_addr);
     }
 
     FILE *w = fopen(NX_CONFIG_PATH, "w");

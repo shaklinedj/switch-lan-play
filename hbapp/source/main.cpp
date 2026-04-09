@@ -39,8 +39,15 @@
 #define STR_MAX     256
 
 /* -------------------------------------------------------------------------
- * Framebuffer console helpers
+ * Timing constant
  * ---------------------------------------------------------------------- */
+#define SLEEP_1500MS     1500000000LL /* 1.5 seconds in nanoseconds */
+
+/* -------------------------------------------------------------------------
+ * Config file buffer sizes (must be ≥ sysmodule config.cpp values)
+ * ---------------------------------------------------------------------- */
+#define MAX_CONFIG_LINES 64
+#define MAX_LINE_LEN     512
 static PrintConsole g_console;
 
 static void con_clear(void)
@@ -109,23 +116,25 @@ static int save_relay(const char *relay_addr)
 {
     mkdir(CONFIG_DIR, 0777);
 
-    char  lines[64][512];
+    char  lines[MAX_CONFIG_LINES][MAX_LINE_LEN];
     int   nlines = 0;
     bool  found  = false;
 
     FILE *r = fopen(CONFIG_PATH, "r");
     if (r) {
-        while (nlines < 63 && fgets(lines[nlines], 512, r))
+        while (nlines < MAX_CONFIG_LINES - 1 &&
+               fgets(lines[nlines], MAX_LINE_LEN, r))
             nlines++;
         fclose(r);
     }
 
     for (int i = 0; i < nlines; i++) {
-        char tmp[512];
-        strncpy(tmp, lines[i], 511);
+        char tmp[MAX_LINE_LEN];
+        strncpy(tmp, lines[i], MAX_LINE_LEN - 1);
+        tmp[MAX_LINE_LEN - 1] = '\0';
         trim(tmp);
         if (strncmp(tmp, "relay_addr", 10) == 0 && strchr(tmp, '=')) {
-            snprintf(lines[i], 512, "relay_addr = %s\n", relay_addr);
+            snprintf(lines[i], MAX_LINE_LEN, "relay_addr = %s\n", relay_addr);
             found = true;
             break;
         }
@@ -133,10 +142,10 @@ static int save_relay(const char *relay_addr)
 
     if (!found) {
         if (nlines == 0) {
-            snprintf(lines[nlines++], 512, "; switch-lan-play configuration\n");
-            snprintf(lines[nlines++], 512, "[server]\n");
+            snprintf(lines[nlines++], MAX_LINE_LEN, "; switch-lan-play configuration\n");
+            snprintf(lines[nlines++], MAX_LINE_LEN, "[server]\n");
         }
-        snprintf(lines[nlines++], 512, "relay_addr = %s\n", relay_addr);
+        snprintf(lines[nlines++], MAX_LINE_LEN, "relay_addr = %s\n", relay_addr);
     }
 
     FILE *w = fopen(CONFIG_PATH, "w");
@@ -222,7 +231,7 @@ int main(int argc, char *argv[])
     if (!proceed) {
         con_print("\n  Cancelled.  Exiting...\n");
         consoleUpdate(NULL);
-        svcSleepThread(1500000000LL);
+        svcSleepThread(SLEEP_1500MS);
         consoleExit(NULL);
         fsdevUnmountAll();
         return 0;
@@ -236,7 +245,7 @@ int main(int argc, char *argv[])
         con_clear();
         con_print("\n\n  No address entered.  Exiting...\n");
         consoleUpdate(NULL);
-        svcSleepThread(1500000000LL);
+        svcSleepThread(SLEEP_1500MS);
         consoleExit(NULL);
         fsdevUnmountAll();
         return 0;
