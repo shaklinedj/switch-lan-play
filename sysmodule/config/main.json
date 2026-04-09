@@ -1,0 +1,114 @@
+{
+    "name": "LanPlaySysmodule",
+    "title_id": "0x010000000000FF01",
+    "main_thread_stack_size": "0x00020000",
+    "main_thread_priority": 44,
+    "default_cpu_id": 3,
+    "process_category": 0,
+    "is_64_bit": true,
+    "address_space_type": "AddressSpace64Bit",
+    "filesystem_access": {
+        "permissions": "0x8000000000000001"
+    },
+    "service_access": [
+        "bsd:s",
+        "bsd:u",
+        "sfdnsres",
+        "nifm:s",
+        "nifm:u",
+        "set:sys",
+        "fsp-srv",
+        "time:s",
+        "time:u",
+        "spl:"
+    ],
+    "service_host": [],
+    "kernel_capabilities": [
+        {
+            "type": "kernel_flags",
+            "value": {
+                "allow_debug": false,
+                "force_debug": false
+            }
+        },
+        {
+            "type": "syscalls",
+            "value": {
+                "svcSetHeapSize": true,
+                "svcSetMemoryPermission": true,
+                "svcSetMemoryAttribute": true,
+                "svcMapMemory": true,
+                "svcUnmapMemory": true,
+                "svcQueryMemory": true,
+                "svcExitProcess": true,
+                "svcCreateThread": true,
+                "svcStartThread": true,
+                "svcExitThread": true,
+                "svcSleepThread": true,
+                "svcGetThreadPriority": true,
+                "svcSetThreadPriority": true,
+                "svcGetThreadCoreMask": true,
+                "svcSetThreadCoreMask": true,
+                "svcGetCurrentProcessorNumber": true,
+                "svcSignalEvent": true,
+                "svcClearEvent": true,
+                "svcMapSharedMemory": true,
+                "svcUnmapSharedMemory": true,
+                "svcCreateTransferMemory": true,
+                "svcCloseHandle": true,
+                "svcResetSignal": true,
+                "svcWaitSynchronization": true,
+                "svcCancelSynchronization": true,
+                "svcArbitrateLock": true,
+                "svcArbitrateUnlock": true,
+                "svcWaitProcessWideKeyAtomic": true,
+                "svcSignalProcessWideKey": true,
+                "svcGetSystemTick": true,
+                "svcConnectToNamedPort": true,
+                "svcSendSyncRequestLight": true,
+                "svcSendSyncRequest": true,
+                "svcSendSyncRequestWithUserBuffer": true,
+                "svcSendAsyncRequestWithUserBuffer": true,
+                "svcGetProcessId": true,
+                "svcGetThreadId": true,
+                "svcBreak": true,
+                "svcOutputDebugString": true,
+                "svcReturnFromException": true,
+                "svcGetInfo": true,
+                "svcFlushEntireDataCache": true,
+                "svcFlushDataCache": true,
+                "svcMapPhysicalMemory": true,
+                "svcUnmapPhysicalMemory": true,
+                "svcGetLastThreadInfo": true,
+                "svcGetResourceLimitLimitValue": true,
+                "svcGetResourceLimitCurrentValue": true,
+                "svcSetThreadActivity": true,
+                "svcGetThreadContext3": true,
+                "svcWaitForAddress": true,
+                "svcSignalToAddress": true
+            }
+        },
+        {
+            "type": "core_mask",
+            "value": 15
+        },
+        {
+            "type": "priority_mask",
+            "value": {
+                "lowest": 63,
+                "highest": 44
+            }
+        },
+        {
+            "type": "handle_table_size",
+            "value": 256
+        },
+        {
+            "type": "debug_flags",
+            "value": {
+                "allow_debug": false,
+                "force_debug": false
+            }
+        }
+    ]
+}
