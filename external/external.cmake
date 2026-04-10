@@ -10,9 +10,17 @@ if (UV_LIBRARY)
         INTERFACE_INCLUDE_DIRECTORIES ${LIBUV_INCLUDE_DIR}
     )
 else()
-    message(STATUS "Installing libuv via submodule")
-    execute_process(COMMAND git submodule update --init -- external/libuv
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/libuv/CMakeLists.txt")
+        message(STATUS "Installing libuv via submodule")
+        execute_process(COMMAND git submodule update --init -- external/libuv
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                        RESULT_VARIABLE GIT_SUBMODULE_RESULT)
+        if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize libuv submodule. Run: git submodule update --init -- external/libuv")
+        endif()
+    else()
+        message(STATUS "libuv submodule already present, skipping git submodule update")
+    endif()
     add_subdirectory(external/libuv EXCLUDE_FROM_ALL)
     target_include_directories(uv_a INTERFACE external/libuv/include)
     if (UV_TERMUX_PATCH)
@@ -32,9 +40,17 @@ if (UVW_LIBRARY)
         INTERFACE_INCLUDE_DIRECTORIES ${LIBUVW_INCLUDE_DIR}
     )
 else()
-    message(STATUS "Installing uvw via submodule")
-    execute_process(COMMAND git submodule update --init -- external/uvw
-                    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/uvw/CMakeLists.txt")
+        message(STATUS "Installing uvw via submodule")
+        execute_process(COMMAND git submodule update --init -- external/uvw
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                        RESULT_VARIABLE GIT_SUBMODULE_RESULT)
+        if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
+            message(FATAL_ERROR "Failed to initialize uvw submodule. Run: git submodule update --init -- external/uvw")
+        endif()
+    else()
+        message(STATUS "uvw submodule already present, skipping git submodule update")
+    endif()
     add_subdirectory(external/uvw EXCLUDE_FROM_ALL)
     include_directories(external/uvw/src)
 endif()
