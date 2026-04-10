@@ -1,6 +1,43 @@
+include(FetchContent)
+
 option(UV_LIBRARY "use installed libuv instead of building from source")
 option(UVW_LIBRARY "use installed uvw instead of building from source")
 option(UV_TERMUX_PATCH "apply libuv_termux.diff" ${OS_ANDROID})
+
+# Pinned versions for FetchContent fallback (must match .gitmodules commits)
+set(LIBUV_FETCH_TAG "v1.24.1" CACHE STRING "libuv version to fetch if submodule unavailable")
+set(UVW_FETCH_TAG "v1.12.0_libuv-v1.24" CACHE STRING "uvw version to fetch if submodule unavailable")
+
+# Helper function to initialize submodule or fetch from GitHub
+# Sets ${NAME}_FETCHED and ${NAME}_SOURCE_DIR in parent scope
+function(init_or_fetch_dependency NAME SUBMODULE_PATH FETCH_URL FETCH_TAG)
+    if (EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}/CMakeLists.txt")
+        message(STATUS "${NAME} submodule already present")
+        set(${NAME}_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}" PARENT_SCOPE)
+        set(${NAME}_FETCHED FALSE PARENT_SCOPE)
+    else()
+        # Try git submodule first
+        message(STATUS "Initializing ${NAME} via git submodule...")
+        execute_process(COMMAND git submodule update --init -- ${SUBMODULE_PATH}
+                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+                        RESULT_VARIABLE GIT_SUBMODULE_RESULT
+                        ERROR_QUIET OUTPUT_QUIET)
+        if (GIT_SUBMODULE_RESULT EQUAL 0 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}/CMakeLists.txt")
+            message(STATUS "${NAME} initialized via git submodule")
+            set(${NAME}_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}" PARENT_SCOPE)
+            set(${NAME}_FETCHED FALSE PARENT_SCOPE)
+        else()
+            # Fallback to FetchContent (only declare, don't populate yet)
+            message(STATUS "Git submodule unavailable, fetching ${NAME} from ${FETCH_URL} (${FETCH_TAG})...")
+            FetchContent_Declare(${NAME}
+                GIT_REPOSITORY ${FETCH_URL}
+                GIT_TAG ${FETCH_TAG}
+                GIT_SHALLOW TRUE
+            )
+            set(${NAME}_FETCHED TRUE PARENT_SCOPE)
+        endif()
+    endif()
+endfunction()
 
 if (UV_LIBRARY)
     find_package(Libuv REQUIRED)
@@ -10,26 +47,20 @@ if (UV_LIBRARY)
         INTERFACE_INCLUDE_DIRECTORIES ${LIBUV_INCLUDE_DIR}
     )
 else()
-    if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/libuv/CMakeLists.txt")
-        message(STATUS "Installing libuv via submodule")
-        execute_process(COMMAND git submodule update --init -- external/libuv
-                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                        RESULT_VARIABLE GIT_SUBMODULE_RESULT)
-        if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
-            message(FATAL_ERROR "Failed to initialize libuv submodule. Run: git submodule update --init -- external/libuv")
+    init_or_fetch_dependency(libuv "external/libuv" "https://github.com/libuv/libuv.git" "${LIBUV_FETCH_TAG}")
+    if (libuv_FETCHED)
+        FetchContent_MakeAvailable(libuv)
+        FetchContent_GetProperties(libuv SOURCE_DIR libuv_SOURCE_DIR)
+        # Add INTERFACE include directories since libuv sets them as PRIVATE
+        target_include_directories(uv_a INTERFACE ${libuv_SOURCE_DIR}/include)
+    else()
+        add_subdirectory(external/libuv EXCLUDE_FROM_ALL)
+        target_include_directories(uv_a INTERFACE external/libuv/include)
+        if (UV_TERMUX_PATCH)
+            message(STATUS "Apply libuv_termux.diff")
+            execute_process(COMMAND git apply ../patch/libuv_termux.diff
+                WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external/libuv)
         endif()
-    else()
-        message(STATUS "libuv submodule already present, skipping git submodule update")
-    endif()
-    add_subdirectory(external/libuv EXCLUDE_FROM_ALL)
-    target_include_directories(uv_a INTERFACE external/libuv/include)
-    if (UV_TERMUX_PATCH)
-        message(STATUS "Apply libuv_termux.diff")
-        execute_process(COMMAND git apply ../patch/libuv_termux.diff
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external/libuv)
-    else()
-        execute_process(COMMAND git apply -R ../patch/libuv_termux.diff
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/external/libuv)
     endif()
 endif()
 
@@ -40,17 +71,13 @@ if (UVW_LIBRARY)
         INTERFACE_INCLUDE_DIRECTORIES ${LIBUVW_INCLUDE_DIR}
     )
 else()
-    if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/uvw/CMakeLists.txt")
-        message(STATUS "Installing uvw via submodule")
-        execute_process(COMMAND git submodule update --init -- external/uvw
-                        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-                        RESULT_VARIABLE GIT_SUBMODULE_RESULT)
-        if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
-            message(FATAL_ERROR "Failed to initialize uvw submodule. Run: git submodule update --init -- external/uvw")
-        endif()
+    init_or_fetch_dependency(uvw "external/uvw" "https://github.com/skypjack/uvw.git" "${UVW_FETCH_TAG}")
+    if (uvw_FETCHED)
+        FetchContent_MakeAvailable(uvw)
+        FetchContent_GetProperties(uvw SOURCE_DIR uvw_SOURCE_DIR)
+        include_directories(${uvw_SOURCE_DIR}/src)
     else()
-        message(STATUS "uvw submodule already present, skipping git submodule update")
+        add_subdirectory(external/uvw EXCLUDE_FROM_ALL)
+        include_directories(external/uvw/src)
     endif()
-    add_subdirectory(external/uvw EXCLUDE_FROM_ALL)
-    include_directories(external/uvw/src)
 endif()
