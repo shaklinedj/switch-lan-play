@@ -16,12 +16,10 @@ else()
                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                         RESULT_VARIABLE GIT_SUBMODULE_RESULT)
         if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
-            message(FATAL_ERROR "git submodule update failed for external/libuv (exit code ${GIT_SUBMODULE_RESULT}). "
-                "Please run 'git submodule update --init' manually, or set -DUV_LIBRARY=ON to use a system-installed libuv.")
+            message(FATAL_ERROR "git submodule update failed for external/libuv (exit code ${GIT_SUBMODULE_RESULT}). Please run 'git submodule update --init' manually, or set -DUV_LIBRARY=ON to use a system-installed libuv.")
         endif()
         if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/libuv/CMakeLists.txt")
-            message(FATAL_ERROR "external/libuv submodule is empty. "
-                "Please run 'git submodule update --init' manually, or set -DUV_LIBRARY=ON to use a system-installed libuv.")
+            message(FATAL_ERROR "external/libuv submodule is empty. Please run 'git submodule update --init' manually, or set -DUV_LIBRARY=ON to use a system-installed libuv.")
         endif()
     endif()
     add_subdirectory(external/libuv EXCLUDE_FROM_ALL)
@@ -49,12 +47,10 @@ else()
                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                         RESULT_VARIABLE GIT_SUBMODULE_RESULT)
         if (NOT GIT_SUBMODULE_RESULT EQUAL 0)
-            message(FATAL_ERROR "git submodule update failed for external/uvw (exit code ${GIT_SUBMODULE_RESULT}). "
-                "Please run 'git submodule update --init' manually, or set -DUVW_LIBRARY=ON to use a system-installed uvw.")
+            message(FATAL_ERROR "git submodule update failed for external/uvw (exit code ${GIT_SUBMODULE_RESULT}). Please run 'git submodule update --init' manually, or set -DUVW_LIBRARY=ON to use a system-installed uvw.")
         endif()
         if (NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/uvw/CMakeLists.txt")
-            message(FATAL_ERROR "external/uvw submodule is empty. "
-                "Please run 'git submodule update --init' manually, or set -DUVW_LIBRARY=ON to use a system-installed uvw.")
+            message(FATAL_ERROR "external/uvw submodule is empty. Please run 'git submodule update --init' manually, or set -DUVW_LIBRARY=ON to use a system-installed uvw.")
         endif()
     endif()
     add_subdirectory(external/uvw EXCLUDE_FROM_ALL)
