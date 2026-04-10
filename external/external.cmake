@@ -31,12 +31,16 @@ function(init_or_fetch_dependency NAME SUBMODULE_PATH FETCH_URL FETCH_TAG)
         execute_process(COMMAND git submodule update --init -- ${SUBMODULE_PATH}
                         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
                         RESULT_VARIABLE GIT_SUBMODULE_RESULT
-                        ERROR_QUIET OUTPUT_QUIET)
+                        ERROR_VARIABLE GIT_SUBMODULE_ERROR
+                        OUTPUT_QUIET)
         if (GIT_SUBMODULE_RESULT EQUAL 0 AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}/CMakeLists.txt")
             message(STATUS "${NAME} initialized via git submodule")
             set(${NAME}_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/${SUBMODULE_PATH}" PARENT_SCOPE)
             set(${NAME}_FETCHED FALSE PARENT_SCOPE)
         else()
+            if (GIT_SUBMODULE_ERROR)
+                message(STATUS "Git submodule failed: ${GIT_SUBMODULE_ERROR}")
+            endif()
             # Fallback to FetchContent (only declare, don't populate yet)
             message(STATUS "Git submodule unavailable, fetching ${NAME} from ${FETCH_URL} (${FETCH_TAG})...")
             FetchContent_Declare(${NAME}
@@ -61,7 +65,7 @@ else()
     if (libuv_FETCHED)
         FetchContent_MakeAvailable(libuv)
         FetchContent_GetProperties(libuv SOURCE_DIR libuv_SOURCE_DIR)
-        # libuv v1.44.x sets include directories as PRIVATE, we need INTERFACE for dependents
+        # libuv v1.24.x sets include directories as PRIVATE, we need INTERFACE for dependents
         target_include_directories(uv_a INTERFACE $<BUILD_INTERFACE:${libuv_SOURCE_DIR}/include>)
     else()
         add_subdirectory(external/libuv EXCLUDE_FROM_ALL)

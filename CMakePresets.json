@@ -9,8 +9,18 @@
         {
             "name": "default",
             "displayName": "Default Config",
-            "description": "Default build configuration",
+            "description": "Default build configuration. Requires Ninja generator (apt install ninja-build).",
             "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "cacheVariables": {
+                "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "default-any-generator",
+            "displayName": "Default Config (Any Generator)",
+            "description": "Default build configuration using system default generator.",
             "binaryDir": "${sourceDir}/build",
             "cacheVariables": {
                 "CMAKE_POLICY_VERSION_MINIMUM": "3.5",
@@ -31,6 +41,10 @@
         {
             "name": "default",
             "configurePreset": "default"
+        },
+        {
+            "name": "default-any-generator",
+            "configurePreset": "default-any-generator"
         },
         {
             "name": "debug",
