@@ -4,9 +4,19 @@ option(UV_LIBRARY "use installed libuv instead of building from source")
 option(UVW_LIBRARY "use installed uvw instead of building from source")
 option(UV_TERMUX_PATCH "apply libuv_termux.diff" ${OS_ANDROID})
 
-# Pinned versions for FetchContent fallback (must match .gitmodules commits)
+# Pinned versions for FetchContent fallback
+# These versions match the original submodule commits
 set(LIBUV_FETCH_TAG "v1.24.1" CACHE STRING "libuv version to fetch if submodule unavailable")
 set(UVW_FETCH_TAG "v1.12.0_libuv-v1.24" CACHE STRING "uvw version to fetch if submodule unavailable")
+
+# Note: CMAKE_POLICY_VERSION_MINIMUM must be set via command line or CMakePresets.json
+# to allow older dependencies with cmake_minimum_required(VERSION 3.0-3.4) to work
+# with CMake 3.27+ which removed support for cmake_minimum_required < 3.5.
+# Use: cmake --preset default  OR  cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+
+# Disable tests in dependencies to avoid potential build issues
+set(BUILD_TESTING OFF CACHE BOOL "Disable testing in dependencies" FORCE)
+set(LIBUV_BUILD_TESTS OFF CACHE BOOL "Disable libuv tests" FORCE)
 
 # Helper function to initialize submodule or fetch from GitHub
 # Sets ${NAME}_FETCHED and ${NAME}_SOURCE_DIR in parent scope
@@ -51,8 +61,8 @@ else()
     if (libuv_FETCHED)
         FetchContent_MakeAvailable(libuv)
         FetchContent_GetProperties(libuv SOURCE_DIR libuv_SOURCE_DIR)
-        # Add INTERFACE include directories since libuv sets them as PRIVATE
-        target_include_directories(uv_a INTERFACE ${libuv_SOURCE_DIR}/include)
+        # libuv v1.44.x sets include directories as PRIVATE, we need INTERFACE for dependents
+        target_include_directories(uv_a INTERFACE $<BUILD_INTERFACE:${libuv_SOURCE_DIR}/include>)
     else()
         add_subdirectory(external/libuv EXCLUDE_FROM_ALL)
         target_include_directories(uv_a INTERFACE external/libuv/include)
