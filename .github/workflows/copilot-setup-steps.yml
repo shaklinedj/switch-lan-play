@@ -20,7 +20,10 @@ jobs:
             - name: Checkout code
               uses: actions/checkout@v4
               with:
-                  submodules: true
+                  submodules: recursive
+
+            - name: Install system dependencies
+              run: sudo apt-get install -y libpcap-dev
 
             - name: Install mise
               uses: jdx/mise-action@v2
