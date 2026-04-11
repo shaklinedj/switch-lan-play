@@ -1,5 +1,5 @@
 # switch-lan-play
-[![Build status](https://github.com/spacemeowx2/switch-lan-play/workflows/Build/badge.svg)](https://github.com/spacemeowx2/switch-lan-play/actions?query=workflow%3ABuild)
+[![Build status](https://github.com/shaklinedj/switch-lan-play/workflows/Build/badge.svg)](https://github.com/shaklinedj/switch-lan-play/actions?query=workflow%3ABuild)
 [![Chat on discord](https://img.shields.io/badge/chat-on%20discord-7289da.svg)](https://discord.gg/zEMCu5n)
 
 [English](README.md) | 中文
@@ -28,7 +28,7 @@ Switch <-------->  PC(本工具)  <-------------------> 服务器
 
 2. 安装 Npcap 的时候记得选择 **Installed in WinPcap API-compatible mode** (以 WinPcap API 兼容模式安装)
 
-3. 从 [releases](https://github.com/spacemeowx2/switch-lan-play/releases) 下载最新版 `lan-play.exe` 客户端
+3. 从 [releases](https://github.com/shaklinedj/switch-lan-play/releases) 下载最新版 `lan-play.exe` 客户端
 
 4. 运行 `lan-play.exe`
 
@@ -143,7 +143,7 @@ make
 
 ## Docker
 
-`docker run -d -p 11451:11451/udp -p 11451:11451/tcp spacemeowx2/switch-lan-play`
+`docker run -d -p 11451:11451/udp -p 11451:11451/tcp shaklinedj/switch-lan-play`
 
 ## Node
 

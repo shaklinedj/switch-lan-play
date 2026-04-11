@@ -10,7 +10,7 @@
         "build": "tsc -p .",
         "server": "node dist/main.js"
     },
-    "author": "spacemeowx2",
+    "author": "shaklinedj",
     "license": "MIT",
     "devDependencies": {
         "@types/koa": "^2.0.46",

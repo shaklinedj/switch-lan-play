@@ -1,6 +1,6 @@
 # switch-lan-play
 
-[![Estado del build](https://github.com/spacemeowx2/switch-lan-play/workflows/Build/badge.svg)](https://github.com/spacemeowx2/switch-lan-play/actions?query=workflow%3ABuild)
+[![Estado del build](https://github.com/shaklinedj/switch-lan-play/workflows/Build/badge.svg)](https://github.com/shaklinedj/switch-lan-play/actions?query=workflow%3ABuild)
 [![Chat en Discord](https://img.shields.io/badge/chat-en%20discord-7289da.svg)](https://discord.gg/zEMCu5n)
 
 Juega con tus amigos en modo multijugador local (LAN) a través de internet.
@@ -111,7 +111,7 @@ Requiere una IP pública accesible por tus jugadores.
 docker run -d \
   -p 11451:11451/udp \
   -p 11451:11451/tcp \
-  spacemeowx2/switch-lan-play
+  shaklinedj/switch-lan-play
 ```
 
 Con `docker compose` (desde la carpeta `server/`):
