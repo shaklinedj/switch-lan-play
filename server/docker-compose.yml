@@ -4,7 +4,7 @@ services:
   lan-play-server:
     build: .
     # Or use the pre-built image:
-    # image: spacemeowx2/switch-lan-play-server:latest
+    # image: shaklinedj/switch-lan-play-server:latest
     container_name: lan-play-server
     restart: unless-stopped
     ports:
