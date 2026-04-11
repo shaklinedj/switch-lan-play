@@ -124,7 +124,7 @@ docker compose up -d
 ### Opción B — Node.js directamente
 
 ```sh
-git clone https://github.com/spacemeowx2/switch-lan-play
+git clone https://github.com/shaklinedj/switch-lan-play
 cd switch-lan-play/server
 npm install
 npm run build
@@ -206,7 +206,7 @@ lan-play --socks5-server-addr ejemplo.com:1080
 
 ```sh
 sudo apt install libpcap0.8-dev git gcc g++ cmake
-git clone https://github.com/spacemeowx2/switch-lan-play
+git clone https://github.com/shaklinedj/switch-lan-play
 cd switch-lan-play
 mkdir build && cd build
 cmake ..
@@ -246,7 +246,7 @@ Para 32 bits usa `mingw-w64-i686-cmake` y `mingw-w64-i686-gcc` en "MSYS2 MinGW 3
 
 ```sh
 brew install cmake
-git clone https://github.com/spacemeowx2/switch-lan-play
+git clone https://github.com/shaklinedj/switch-lan-play
 cd switch-lan-play
 mkdir build && cd build
 cmake ..
