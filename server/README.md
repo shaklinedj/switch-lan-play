@@ -24,7 +24,7 @@ sudo usermod -aG docker $USER
 # Log out and back in, then:
 
 # Clone the repo
-git clone https://github.com/spacemeowx2/switch-lan-play
+git clone https://github.com/shaklinedj/switch-lan-play
 cd switch-lan-play/server
 
 # Start the server
@@ -72,7 +72,7 @@ sudo usermod -aG docker $USER
 newgrp docker
 
 # Clone & start
-git clone https://github.com/spacemeowx2/switch-lan-play
+git clone https://github.com/shaklinedj/switch-lan-play
 cd switch-lan-play/server
 docker compose up -d
 
