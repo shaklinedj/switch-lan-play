@@ -21,6 +21,14 @@ Juega con tus amigos en modo multijugador local (LAN) a través de internet.
 7. [Protocolo](#protocolo)
 8. [Solución de problemas](#solución-de-problemas)
 
+## Características Técnicas y Mejoras Recientes (Nativo)
+
+Este proyecto ha sido reescrito y optimizado profundamente para integrarse al 100% con las entrañas de *Horizon OS* (El sistema operativo de Nintendo Switch) mediante Atmosphere, logrando lo siguiente:
+- **Ejecución Silenciosa y Autónoma:** El Sysmodule corre enteramente en segundo plano bajo el Title ID `01000000000000B1`, liberando completamente la memoria de las aplicaciones.
+- **Bypass de Traducción DNS (inet_pton):** Si introduces una dirección IP directa (Ej: `10.111.x.x`), el código saltará las rutinas del DNS oficial de Nintendo (`sfdnsres`) evitando el infame error *System Busy (EAI_AGAIN)*, pero manteniendo la compatibilidad con nombres de dominio usando resolución nativa.
+- **Spoofing de Afinidad de Hilos:** En lugar de crashear por restricciones de CPU (Error de Kernel `0xe201`), el sysmodule extrae dinámicamente sus permisos de hilo permitidos (`svcGetThreadPriority`) y los clona en tiempo real, garantizando compatibilidad absoluta sea ejecutado como NRO o como Sysmodule de arranque.
+- **Generación de IP Permanente:** Lee el Número de Serie de hardware único de tu Switch y autogenera matemáticamente una IP de túnel `10.13.X.X` inmutable que será tuya para siempre sin requerir DHCP.
+
 ---
 
 ## ¿Cómo funciona?
@@ -59,7 +67,7 @@ y reinicia la Switch.
 sdmc:/
 ├── atmosphere/
 │   └── contents/
-│       └── 010000000000FF01/
+│       └── 42000000000000B1/
 │           ├── exefs/
 │           │   ├── main           ← sysmodule NSO
 │           │   └── main.npdm      ← permisos

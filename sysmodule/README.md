@@ -48,7 +48,7 @@ of your SD card** and reboot the Switch.
 sdmc:/
 ├── atmosphere/
 │   └── contents/
-│       └── 010000000000FF01/
+│       └── 42000000000000B1/
 │           ├── exefs/
 │           │   ├── main          ← sysmodule NSO
 │           │   └── main.npdm     ← permissions
@@ -146,5 +146,12 @@ password = mysecret
 
 ## Title ID
 
-`010000000000FF01` — safe range for custom sysmodules.
+`42000000000000B1` — specific range for custom networking sysmodules.
 Change in `Makefile` and `config/main.json` if needed.
+
+---
+
+## Technical Highlights (Recent Patches)
+- **Deep Thread Capability Spoofing:** To prevent typical kernel crashes (`0xe201` Out Of Resource) caused by strict Atmosphere CPU Core affinities, this sysmodule dynamically probes horizon's thread pool using `svcGetThreadPriority` and clones the capability bits in real-time.
+- **inet_pton DNS Bypass:** Bypasses `sfdnsres` translation (and the subsequent `EAI_AGAIN - System Busy` lockup) entirely when raw numeric IPs are detected, but gracefully preserves local domain name conversion. 
+- **Ethereal MAC Registration:** Since the sysmodule silently listens in the background, the server connection status will only illuminate active users (`connected: 1`) the precise millisecond a game actively broadcasts an ARP frame on the virtual TUN interface. No ghost pings.
