@@ -23,7 +23,7 @@ DATA        := data
 INCLUDES    := source
 ROMFS       :=
 
-TITLE_ID    := 010000000000FF01
+TITLE_ID    := 42000000000000B1
 
 #---------------------------------------------------------------------------------
 # options for code generation

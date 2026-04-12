@@ -2,6 +2,7 @@
  * Only change: include "arp.h" (which includes nx_common.h) instead of
  * "lan-play.h".  All logic is identical to the original. */
 #include "arp.h"
+#include "packet.h"
 
 uint8_t NONE_IP[4]        = {0, 0, 0, 0};
 uint8_t NONE_MAC[6]       = {0, 0, 0, 0, 0, 0};

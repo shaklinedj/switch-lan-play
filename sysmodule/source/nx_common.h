@@ -11,6 +11,7 @@ extern "C" {
 #endif
 
 /* Standard C / POSIX */
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -20,6 +21,7 @@ extern "C" {
 #include <errno.h>
 #include <time.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 /* Switch SDK */
 #include <switch.h>
@@ -27,7 +29,7 @@ extern "C" {
 /* BSD socket API (initialised via socketInitializeDefault()) */
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <netinet/ip.h>
+/* #include <netinet/ip.h> */
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <sys/ioctl.h>

@@ -90,7 +90,10 @@ static int lan_client_send(struct lan_play *lp, uint8_t type,
     /* Non-fragmented: [type(1)] [data(len)] */
     size_t total = 1 + len;
     uint8_t *buf = (uint8_t *)malloc(total);
-    if (!buf) return -1;
+    if (!buf) {
+        LLOG(LLOG_ERROR, "lan_client_send: out of memory (%zu bytes)", total);
+        return -1;
+    }
     buf[0] = type;
     if (len > 0) memcpy(buf + 1, packet, len);
     int ret = relay_send_raw(lp, buf, total);
@@ -115,7 +118,7 @@ typedef struct {
     uint16_t         len;
 } for_each_ctx_t;
 
-static int arp_for_each_cb(void *p, const struct arp_item *item)
+static int lan_client_arp_cb(void *p, const struct arp_item *item)
 {
     for_each_ctx_t *ctx = (for_each_ctx_t *)p;
     struct payload part;
@@ -139,7 +142,7 @@ static int lan_client_on_broadcast(struct lan_play *lp,
     }
 
     for_each_ctx_t ctx = { lp, packet, len };
-    arp_for_each(&lp->packet_ctx, &ctx, arp_for_each_cb);
+    arp_for_each(&lp->packet_ctx, &ctx, lan_client_arp_cb);
     return 0;
 }
 
@@ -239,15 +242,22 @@ static void lan_client_process_auth_me(struct lan_play *lp,
     uint16_t       uname_len     = (uint16_t)strlen(lp->username);
     uint16_t       resp_len      = 20 + uname_len;
     uint8_t       *resp          = (uint8_t *)malloc(resp_len);
-    if (!resp) return;
+    if (!resp) {
+        LLOG(LLOG_ERROR, "lan_client_process_auth_me: out of memory");
+        return;
+    }
 
     SHA1_CTX ctx;
     SHA1Init(&ctx);
     SHA1Update(&ctx, lp->key, LP_KEY_LEN);
     SHA1Update(&ctx, challenge, challenge_len);
     SHA1Final(resp, &ctx);
+    /* Scrub the SHA1 context — it contains key material */
+    memset(&ctx, 0, sizeof(ctx));
     memcpy(resp + 20, lp->username, uname_len);
     lan_client_send(lp, LAN_CLIENT_TYPE_AUTH_ME, resp, resp_len);
+    /* Scrub the response buffer before freeing */
+    memset(resp, 0, resp_len);
     free(resp);
 }
 
@@ -360,4 +370,6 @@ void lan_client_close(struct lan_play *lp)
         close(lp->relay_fd);
         lp->relay_fd = -1;
     }
+    /* Wipe fragment reassembly buffers — they may contain packet data */
+    memset(lp->frags, 0, sizeof(lp->frags));
 }

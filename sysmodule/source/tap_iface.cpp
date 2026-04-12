@@ -46,7 +46,8 @@ static void build_virtual_mac(uint8_t mac[6])
     if (R_SUCCEEDED(rc)) {
         /* Hash the serial string into 5 bytes */
         uint32_t h = 0x811c9dc5u;
-        for (size_t i = 0; i < sizeof(serial.number) && serial.number[i]; i++) {
+        size_t i = 0;
+        for (; i < sizeof(serial.number) && serial.number[i]; i++) {
             h ^= (uint8_t)serial.number[i];
             h *= 0x01000193u;
         }
@@ -81,10 +82,11 @@ int tap_init(struct lan_play *lp)
     /* Enable inclusion of full IP header in sent packets */
     int on = 1;
     if (setsockopt(lp->raw_fd, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
+        /* Non-fatal: log and continue — the socket is still usable */
         LLOG(LLOG_WARNING, "tap: IP_HDRINCL failed: %s (continuing)", strerror(errno));
     }
 
-    /* Allow receiving broadcast packets */
+    /* Allow receiving and sending broadcast packets */
     if (setsockopt(lp->raw_fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) < 0) {
         LLOG(LLOG_WARNING, "tap: SO_BROADCAST failed: %s", strerror(errno));
     }

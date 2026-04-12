@@ -3,10 +3,17 @@
 
 int process_icmp(struct packet_ctx *self, const struct ipv4 *ipv4)
 {
+    int icmp_len = ipv4->total_len - ipv4->header_len;
+
+    /* Guard against malformed packets that would overflow our local buffer */
+    if (icmp_len <= 0 || icmp_len > (int)(BUFFER_SIZE)) {
+        LLOG(LLOG_WARNING, "process_icmp: bad icmp_len=%d, dropping", icmp_len);
+        return -1;
+    }
+
     uint8_t payload[BUFFER_SIZE];
     struct payload part;
 
-    int icmp_len = ipv4->total_len - ipv4->header_len;
     memcpy(payload, ipv4->payload, (size_t)icmp_len);
     WRITE_NET8(payload,  0, 0);      /* type = echo reply */
     WRITE_NET16(payload, 2, 0x0000); /* clear checksum */
