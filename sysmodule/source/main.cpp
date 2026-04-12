@@ -181,7 +181,7 @@ static const SocketInitConfig g_socket_config = {
     .udp_rx_buf_size     = 0xA500,
     .sb_efficiency       = 2,
     .num_bsd_sessions    = 3,
-    .bsd_service_type    = BsdServiceType_Auto,
+    .bsd_service_type    = BsdServiceType_User, /* MUST BE USER. bsd:s ignores game local broadcasts */
 };
 
 /* -------------------------------------------------------------------------
