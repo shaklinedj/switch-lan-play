@@ -108,6 +108,19 @@ relay_addr = relay.ejemplo.com:11451
 
 ---
 
+## Jugar títulos sin modo LAN oficial (`ldn_mitm`)
+
+Tu nueva versión instalada del Lan Play intercepta automáticamente juegos que traen un **"Modo LAN Oficial"** de fábrica (ej: Mario Kart 8 Deluxe usando L+R+L-Stick).
+¿Pero qué pasa si quieres jugar a títulos como *Super Mario 3D World* o *Pokémon* que sólo tienen "Inalámbrico Local"?
+
+Para eso, **necesitas usar nuestro sysmodule nativo en combinación con `ldn_mitm`**.
+1. Descarga el Sysmodule oficial de `ldn_mitm` desde [su GitHub oficial](https://github.com/spacemeowx2/ldn_mitm/releases).
+2. Extrae el contenido en la raíz de tu MicroSD (creará su propia carpeta en `atmosphere/contents/` junto a la tuya).
+3. Reinicia tu Switch.
+4. Ahora, cuando entres al "Modo Local" de CUALQUIER juego inalámbrico, `ldn_mitm` convertirá las señales locales a señales LAN, y tu sysmodule secreto `switch-lan-play` las tomará y las disparará a la otra punta del planeta sin que los juegos se den cuenta.
+
+---
+
 ## Servidor relay
 
 El servidor escucha en el puerto `11451/UDP` y reenvía paquetes entre las consolas conectadas.

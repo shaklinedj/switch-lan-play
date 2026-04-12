@@ -289,6 +289,16 @@ http://TU_IP_PUBLICA:11451/info
    - **Super Smash Bros. Ultimate**: Versus → Red local
 4. El endpoint `/info` debe mostrar `"online": 2`
 
+### Jugar Juegos sin Modo LAN Oficial (`ldn_mitm`)
+
+La mayoría de los juegos (como **Super Mario 3D World** o **Pokémon**) no tienen la opción "LAN Play", sino que usan **"Modo Inalámbrico Local"**. Para poder jugarlos a través de internet usando nuestro sysmodule nativo, necesitarás instalar un módulo adicional llamado **`ldn_mitm`**:
+
+1. Ve al [GitHub oficial de ldn_mitm](https://github.com/spacemeowx2/ldn_mitm/releases) y descarga la última versión (Asegúrate de que sea compatible con tu versión de Atmosphere).
+2. Extrae el archivo `.zip` en la raíz de la tarjeta SD de tu consola. Esto colocará el módulo auxiliar en la carpeta de Atmosphere correspondiente.
+3. Reinicia tu Switch.
+4. Entra al juego que quieras y selecciona **"Juego Local Inalámbrico"**.
+5. ¡Magia! `ldn_mitm` capturará las extrañas señales inalámbricas de Nintendo, las transformará en señales LAN, y nuestro sysmodule secreto las atrapará y las enviará por internet al servidor Lan Play.
+
 ### Checklist de conexión
 
 ```
