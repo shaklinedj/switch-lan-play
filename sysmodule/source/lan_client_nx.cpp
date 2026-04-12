@@ -323,7 +323,10 @@ void lan_client_keepalive_thread_fn(void *arg)
         /* Also toggle next_real_broadcast so every 1 s we do a real broadcast */
         lp->next_real_broadcast = true;
 
-        svcSleepThread(10000000000LL); /* 10 seconds in nanoseconds */
+        /* Sleep for 10 seconds in 1-second chunks so we can terminate quickly on reboot/reload */
+        for (int i = 0; i < 10 && lp->running; i++) {
+            svcSleepThread(1000000000LL); /* 1 second */
+        }
     }
     LLOG(LLOG_INFO, "relay: keepalive thread exiting");
 }
