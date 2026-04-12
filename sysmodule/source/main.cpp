@@ -251,6 +251,23 @@ static int run_service(void)
     LLOG(LLOG_INFO, "=== switch-lan-play sysmodule starting ===");
 
     /* ------------------------------------------------------------------ */
+    /* 0. Wait for Network to be fully established by Horizon (Boot time) */
+    /* ------------------------------------------------------------------ */
+    LLOG(LLOG_INFO, "Waiting for active Internet Connection...");
+    while (true) {
+        u32 out_ip = 0;
+        if (R_SUCCEEDED(g_rc_nifm)) {
+            nifmGetCurrentIpAddress(&out_ip);
+            if (out_ip != 0) {
+                LLOG(LLOG_INFO, "Network is UP and stabilized!");
+                break;
+            }
+        }
+        /* If NIFM isn't up, just keep checking every 2 seconds */
+        svcSleepThread(2000000000LL);
+    }
+
+    /* ------------------------------------------------------------------ */
     /* 1. Read config                                                       */
     /* ------------------------------------------------------------------ */
     nx_config_t cfg;
@@ -418,8 +435,8 @@ static int run_service(void)
     threadStart(&lp->relay_thread);    relay_started    = true;
     threadStart(&keepalive_thread);    keepalive_started = true;
 
-    LLOG(LLOG_INFO, "All threads started.  LAN play relay is active.");
-    LLOG(LLOG_INFO, "My IP: %s  Relay: %s", cfg.my_ip, cfg.relay_addr);
+    /* Write everything in a single LLOG block to prevent FatFS concurrent fopen locking drops */
+    LLOG(LLOG_INFO, "ALL 3 Threads started. LAN relay is ACTIVE. My IP: %s | Relay: %s", cfg.my_ip, cfg.relay_addr);
 
     /* ------------------------------------------------------------------ */
     /* 10. Service Loop (Restartable without reboot)                       */
