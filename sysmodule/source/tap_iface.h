@@ -44,6 +44,25 @@ int  tap_send_packet(struct lan_play *lp, const void *eth_frame, int len);
  */
 void tap_recv_thread_fn(void *arg);
 
+/**
+ * ldn_bridge_thread_fn — background thread for ldn_mitm integration.
+ *
+ * Opens a UDP socket bound to INADDR_ANY:LDN_PORT with SO_REUSEPORT and
+ * SO_BROADCAST so it receives a copy of every UDP datagram that ldn_mitm
+ * sends on the LAN-discovery port (11452).  For each received datagram it
+ * builds a synthetic IPv4+UDP frame (src = our virtual IP, dst = the virtual
+ * subnet broadcast 10.13.255.255) and forwards it to the relay server so
+ * other players' sysmodules inject it into their local network stacks.
+ *
+ * Loop prevention: packets whose source address matches the virtual-subnet
+ * broadcast (i.e. packets that were injected from the relay and looped back
+ * via the kernel) are silently dropped.
+ *
+ * This thread is started only when lp->ldn_fd >= 0 (i.e. the bind
+ * succeeded).  It exits as soon as lp->running becomes false.
+ */
+void ldn_bridge_thread_fn(void *arg);
+
 #ifdef __cplusplus
 }
 #endif

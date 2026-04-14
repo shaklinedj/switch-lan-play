@@ -46,12 +46,24 @@ sysmodule:
 
 # ---------------------------------------------------------------------------
 # ldn_mitm (submodule: ldn_mitm/)
+#
+# Before building we apply the patches in patches/ to wire ldn_mitm up with
+# switch-lan-play's relay via lanplay_bridge.{hpp,cpp}.  The --forward flag
+# makes patch(1) silently skip hunks that are already applied, so re-running
+# make is idempotent.
 # ---------------------------------------------------------------------------
 ldn_mitm:
 	@if [ ! -f $(LDNMITM_DIR)/Makefile ]; then \
 	    echo "[!] ldn_mitm submodule not initialised."; \
 	    echo "    Run: git submodule update --init --recursive ldn_mitm"; \
 	    exit 1; \
+	fi
+	@if [ -d patches ] && ls patches/*.patch >/dev/null 2>&1; then \
+	    echo "==> Applying patches to ldn_mitm..."; \
+	    for p in patches/*.patch; do \
+	        echo "    Applying $$p"; \
+	        patch --forward --silent -p1 -d $(LDNMITM_DIR) < "$$p" || true; \
+	    done; \
 	fi
 	@echo "==> Building ldn_mitm..."
 	$(MAKE) -C $(LDNMITM_DIR)

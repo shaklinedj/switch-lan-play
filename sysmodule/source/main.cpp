@@ -143,9 +143,10 @@ static uint8_t g_pkt_buffer[BUFFER_SIZE];
  * Thread stacks (statically allocated — sysmodule has no heap growth)
  * ---------------------------------------------------------------------- */
 #define STACK_SIZE 0x8000 /* 32 KB per thread */
-static uint8_t s_tap_stack[STACK_SIZE]       __attribute__((aligned(0x1000)));
-static uint8_t s_relay_stack[STACK_SIZE]     __attribute__((aligned(0x1000)));
-static uint8_t s_keepalive_stack[STACK_SIZE] __attribute__((aligned(0x1000)));
+static uint8_t s_tap_stack[STACK_SIZE]          __attribute__((aligned(0x1000)));
+static uint8_t s_relay_stack[STACK_SIZE]        __attribute__((aligned(0x1000)));
+static uint8_t s_keepalive_stack[STACK_SIZE]    __attribute__((aligned(0x1000)));
+static uint8_t s_ldn_bridge_stack[STACK_SIZE]   __attribute__((aligned(0x1000)));
 
 /* =========================================================================
  * CRITICAL: libnx sysmodule boilerplate.
@@ -306,6 +307,7 @@ static int run_service(void)
     memset(lp, 0, sizeof(*lp));
     lp->raw_fd   = -1;
     lp->relay_fd = -1;
+    lp->ldn_fd   = -1;
     lp->running  = true;
     lp->pmtu     = 0; /* no fragmentation by default */
 
@@ -395,11 +397,13 @@ static int run_service(void)
     /* 9. Start background threads                                          */
     /* ------------------------------------------------------------------ */
     Result rc;
-    bool tap_started      = false;
-    bool relay_started    = false;
+    bool tap_started       = false;
+    bool relay_started     = false;
     bool keepalive_started = false;
+    bool ldn_bridge_started = false;
     Thread keepalive_thread;
-    memset(&keepalive_thread, 0, sizeof(keepalive_thread));
+    memset(&keepalive_thread,      0, sizeof(keepalive_thread));
+    memset(&lp->ldn_bridge_thread, 0, sizeof(lp->ldn_bridge_thread));
 
     s32 prio = 0;
     svcGetThreadPriority(&prio, CUR_THREAD_HANDLE);
@@ -431,11 +435,24 @@ static int run_service(void)
         goto cleanup;
     }
 
-    threadStart(&lp->tap_thread);      tap_started      = true;
-    threadStart(&lp->relay_thread);    relay_started    = true;
+    threadStart(&lp->tap_thread);      tap_started       = true;
+    threadStart(&lp->relay_thread);    relay_started     = true;
     threadStart(&keepalive_thread);    keepalive_started = true;
 
-    /* Write everything in a single LLOG block to prevent FatFS concurrent fopen locking drops */
+    /* LDN bridge thread — optional, only when ldn_fd is available */
+    if (lp->ldn_fd >= 0) {
+        rc = threadCreate(&lp->ldn_bridge_thread, ldn_bridge_thread_fn, lp,
+                          s_ldn_bridge_stack, sizeof(s_ldn_bridge_stack), prio, -2);
+        if (R_FAILED(rc)) {
+            LLOG(LLOG_WARNING, "threadCreate ldn_bridge failed: 0x%x "
+                 "(ldn_mitm integration disabled)", rc);
+        } else {
+            threadStart(&lp->ldn_bridge_thread);
+            ldn_bridge_started = true;
+            LLOG(LLOG_INFO, "ldn_bridge: thread started");
+        }
+    }
+
     LLOG(LLOG_INFO, "ALL 3 Threads started. LAN relay is ACTIVE. My IP: %s | Relay: %s", cfg.my_ip, cfg.relay_addr);
 
     /* ------------------------------------------------------------------ */
@@ -447,10 +464,11 @@ static int run_service(void)
         if (sf) {
             fprintf(sf, "active=1\n");
             fprintf(sf, "error=\n");
-            fprintf(sf, "relay=%s\n", cfg.relay_addr);
-            fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
+            fprintf(sf, "my_ip=%s\n",      cfg.my_ip);
+            fprintf(sf, "relay=%s\n",      cfg.relay_addr);
+            fprintf(sf, "up_pkt=%llu\n",   (unsigned long long)lp->upload_packet);
             fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
-            fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
+            fprintf(sf, "dn_pkt=%llu\n",   (unsigned long long)lp->download_packet);
             fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
             fclose(sf);
         }
@@ -473,6 +491,10 @@ cleanup:
     LLOG(LLOG_INFO, "Shutting down threads for reload...");
     lp->running = false;
 
+    if (ldn_bridge_started) {
+        threadWaitForExit(&lp->ldn_bridge_thread);
+        threadClose(&lp->ldn_bridge_thread);
+    }
     if (keepalive_started) {
         threadWaitForExit(&keepalive_thread);
         threadClose(&keepalive_thread);
