@@ -278,18 +278,22 @@ void tap_recv_thread_fn(void *arg)
  * via the private IPC channel (127.0.0.1:LDN_IPC_PORT) and forwards them to
  * the relay server.
  *
- * Packet flow (outbound from ldn_mitm):
- *   ldn_mitm sends Scan/ScanResp/Connect UDP → 127.0.0.1:LDN_IPC_PORT
- *   ↓  ldn_bridge_thread_fn receives it
- *   ↓  builds a synthetic IPv4+UDP frame: src=my_ip, dst=10.13.255.255
- *   ↓  lan_client_send_ipv4() → relay server → other players' sysmodules
- *   ↓  tap_send_packet() injects packet into each player's kernel → port LDN_PORT
- *   ↓  each player's ldn_mitm receives it on their port LDN_PORT UDP socket
+ * IPC message format (produced by patched LDUdpSocket::sendto):
+ *   [4 bytes — IPv4 destination address, network byte order]
+ *   [N bytes — LDN protocol packet (LANPacketHeader + payload)]
  *
- * No loop-prevention needed: 127.0.0.1 traffic is exclusively local (from
- * ldn_mitm on this console).  Relay-injected packets arrive via tap_send_packet
- * and are delivered directly to ldn_mitm's LDN_PORT socket — they never reach
- * this IPC socket.
+ * The destination IPv4 can be:
+ *   10.13.255.255  — virtual subnet broadcast (Scan)
+ *   10.13.x.y      — unicast virtual IP (ScanResp, direct sends)
+ *
+ * This design handles BOTH broadcast (Scan) and unicast (ScanResp) so the
+ * complete discovery exchange works through the relay:
+ *   Station sends Scan broadcast → all APs receive via relay
+ *   AP sends ScanResp unicast   → Station receives via relay
+ *
+ * No loop-prevention needed: 127.0.0.1 traffic is exclusively local
+ * (ldn_mitm).  Relay-injected packets arrive via tap_send_packet and are
+ * delivered to ldn_mitm's LDN_PORT socket — they never reach this IPC socket.
  */
 void ldn_bridge_thread_fn(void *arg)
 {
@@ -303,17 +307,17 @@ void ldn_bridge_thread_fn(void *arg)
     LLOG(LLOG_INFO, "ldn_bridge: IPC thread started (fd=%d, port %d)",
          lp->ldn_fd, LDN_IPC_PORT);
 
-    /* Virtual subnet broadcast: 10.13.255.255 */
-    static const uint8_t k_virtual_broadcast[4] = { 10, 13, 0xFF, 0xFF };
-
-    /* UDP payload received from ldn_mitm */
-    uint8_t udp_payload[TAP_BUF_SIZE];
+    /*
+     * IPC buffer: 4-byte dst IP prefix + LDN payload
+     */
+    static const size_t IPC_HDR_LEN = 4;
+    uint8_t ipc_buf[IPC_HDR_LEN + TAP_BUF_SIZE];
 
     /* We build the forwarded frame as: Ethernet(14) + IPv4(20) + UDP(8) + payload */
     uint8_t frame[ETHER_HEADER_LEN + IPV4_HEADER_LEN + UDP_OFF_END + TAP_BUF_SIZE];
 
     while (lp->running) {
-        ssize_t n = recv(lp->ldn_fd, udp_payload, sizeof(udp_payload), 0);
+        ssize_t n = recv(lp->ldn_fd, ipc_buf, sizeof(ipc_buf), 0);
 
         if (n <= 0) {
             if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
@@ -321,32 +325,40 @@ void ldn_bridge_thread_fn(void *arg)
             continue;
         }
 
+        if (n <= (ssize_t)IPC_HDR_LEN) continue; /* truncated, drop */
+
+        /* Extract 4-byte destination IP from the IPC header */
+        uint8_t  dst_ip[4];
+        memcpy(dst_ip, ipc_buf, IPC_HDR_LEN);
+        const uint8_t *ldn_payload = ipc_buf + IPC_HDR_LEN;
+        ssize_t        ldn_len     = n - (ssize_t)IPC_HDR_LEN;
+
         /* ---------------------------------------------------------------- */
         /* Build the synthetic Ethernet + IPv4 + UDP frame to relay         */
         /* ---------------------------------------------------------------- */
 
         /* --- Ethernet header --- */
         uint8_t *eth = frame;
-        memset(eth,       0xff, 6);           /* dst = broadcast MAC */
-        memcpy(eth + 6,   lp->my_mac, 6);     /* src = our virtual MAC */
-        eth[12] = 0x08;  eth[13] = 0x00;      /* EtherType = IPv4 */
+        memset(eth,      0xff, 6);            /* dst = broadcast MAC (relay routes) */
+        memcpy(eth + 6,  lp->my_mac, 6);      /* src = our virtual MAC */
+        eth[12] = 0x08; eth[13] = 0x00;       /* EtherType = IPv4 */
 
         /* --- IPv4 header (20 bytes, no options) --- */
         uint8_t *ip = frame + ETHER_HEADER_LEN;
-        uint16_t ip_total_len = (uint16_t)(IPV4_HEADER_LEN + UDP_OFF_END + n);
+        uint16_t ip_total_len = (uint16_t)(IPV4_HEADER_LEN + UDP_OFF_END + ldn_len);
 
-        ip[IPV4_OFF_VER_LEN]   = 0x45;   /* version=4, IHL=5 (no options) */
+        ip[IPV4_OFF_VER_LEN]   = 0x45;
         ip[IPV4_OFF_DSCP_ECN]  = 0x00;
         WRITE_NET16(ip, IPV4_OFF_TOTAL_LEN,         ip_total_len);
         WRITE_NET16(ip, IPV4_OFF_ID,                (uint16_t)(lp->frag_id++ & 0xFFFF));
         WRITE_NET16(ip, IPV4_OFF_FLAGS_FRAG_OFFSET, 0x0000);
         ip[IPV4_OFF_TTL]       = 64;
         ip[IPV4_OFF_PROTOCOL]  = IPV4_PROTOCOL_UDP;
-        WRITE_NET16(ip, IPV4_OFF_CHECKSUM, 0);             /* computed below */
-        CPY_IPV4(ip + IPV4_OFF_SRC, lp->my_ip);           /* source = our virtual IP */
-        CPY_IPV4(ip + IPV4_OFF_DST, k_virtual_broadcast); /* dest   = 10.13.255.255  */
+        WRITE_NET16(ip, IPV4_OFF_CHECKSUM, 0);   /* computed below */
+        CPY_IPV4(ip + IPV4_OFF_SRC, lp->my_ip); /* source = our virtual IP */
+        CPY_IPV4(ip + IPV4_OFF_DST, dst_ip);     /* dest   = from IPC header */
 
-        /* IPv4 header checksum (one's complement of the header word sum) */
+        /* IPv4 header checksum */
         uint32_t cksum = 0;
         for (int i = 0; i < IPV4_HEADER_LEN; i += 2) {
             cksum += (uint32_t)((ip[i] << 8) | ip[i + 1]);
@@ -358,18 +370,14 @@ void ldn_bridge_thread_fn(void *arg)
         uint8_t *udp = ip + IPV4_HEADER_LEN;
         WRITE_NET16(udp, UDP_OFF_SRCPORT,  LDN_PORT);
         WRITE_NET16(udp, UDP_OFF_DSTPORT,  LDN_PORT);
-        WRITE_NET16(udp, UDP_OFF_LENGTH,   (uint16_t)(UDP_OFF_END + n));
-        WRITE_NET16(udp, UDP_OFF_CHECKSUM, 0);  /* checksum optional for UDP/IPv4 */
+        WRITE_NET16(udp, UDP_OFF_LENGTH,   (uint16_t)(UDP_OFF_END + ldn_len));
+        WRITE_NET16(udp, UDP_OFF_CHECKSUM, 0); /* optional for UDP/IPv4 */
 
-        /* --- UDP payload --- */
-        memcpy(udp + UDP_OFF_END, udp_payload, (size_t)n);
+        /* --- LDN payload --- */
+        memcpy(udp + UDP_OFF_END, ldn_payload, (size_t)ldn_len);
 
-        /* ---------------------------------------------------------------- */
-        /* Forward via the relay pipeline.                                   */
-        /* lan_client_send_ipv4() expects raw IPv4 (no Ethernet header).    */
-        /* ---------------------------------------------------------------- */
-        lan_client_send_ipv4(lp, (void *)(ip + IPV4_OFF_DST),
-                             ip, ip_total_len);
+        /* lan_client_send_ipv4() expects raw IPv4 (no Ethernet header) */
+        lan_client_send_ipv4(lp, (void *)(ip + IPV4_OFF_DST), ip, ip_total_len);
     }
 
     LLOG(LLOG_INFO, "ldn_bridge: IPC thread exiting");

@@ -157,7 +157,23 @@ static int lan_client_process(struct lan_play *lp,
 
     if (IS_BROADCAST(dst, lp->packet_ctx.subnet_net, lp->packet_ctx.subnet_mask)) {
         return lan_client_on_broadcast(lp, packet, len);
-    } else if (!arp_get_mac_by_ip(&lp->packet_ctx, dst_mac, dst)) {
+    }
+
+    /* Deliver unicast packets addressed to our own virtual IP.  This is
+     * needed for ldn_mitm integration: when a remote AP sends ScanResp
+     * (unicast) to this console's virtual IP, the sysmodule receives it
+     * from the relay and must deliver it to the local ldn_mitm socket.
+     * Since there is no ARP entry for my_ip in the ARP table (the table
+     * only learns from INCOMING packets observed via tap_recv), we handle
+     * this case explicitly. */
+    if (CMP_IPV4(dst, lp->my_ip)) {
+        part.ptr  = packet;
+        part.len  = len;
+        part.next = NULL;
+        return send_ether(&lp->packet_ctx, lp->my_mac, ETHER_TYPE_IPV4, &part);
+    }
+
+    if (!arp_get_mac_by_ip(&lp->packet_ctx, dst_mac, dst)) {
         return 0;
     }
 

@@ -4,37 +4,40 @@ Subject: [ldn_mitm] Integrate switch-lan-play relay bridge via IPC channel
 Wire ldn_mitm into the switch-lan-play relay so that "wireless local" games
 work over the internet.  Communication with the relay server is entirely UDP.
 
+IPC protocol
+------------
+Each ldn_mitm outbound datagram sent to 127.0.0.1:LDN_IPC_PORT (11453) has
+the format:
+  [4 bytes: IPv4 destination address, network byte order]
+  [N bytes: LDN protocol packet (LANPacketHeader + payload)]
+
+The destination can be 10.13.255.255 (broadcast, for Scan) or 10.13.x.y
+(unicast, for ScanResp and other directed replies).  This makes the FULL
+Scan ↔ ScanResp discovery exchange work across the relay.
+
 Key changes
 -----------
-1. lanplay_bridge.{hpp,cpp}
-   Reads sdmc:/tmp/lanplay.status (written by switch-lan-play every 2 s).
-   Exposes:  lanplay_is_active(), lanplay_get_virtual_ip(),
-             lanplay_get_broadcast(), lanplay_get_ipc_sockaddr()
-   Cache: ~1 second (19 200 000 Switch CPU ticks = 19.2 MHz clock).
+1. lanplay_bridge.{hpp,cpp}  (new files)
+   Reads sdmc:/tmp/lanplay.status (written by switch-lan-play every ~2 s).
+   Exposes: lanplay_is_active(), lanplay_get_virtual_ip(),
+            lanplay_get_broadcast(), lanplay_get_ipc_sockaddr()
 
-2. LDUdpSocket::sendBroadcast overrides  (lan_discovery.cpp / .hpp)
-   When switch-lan-play is active, each outbound LAN-discovery broadcast
-   (e.g. Scan) is ALSO sent to 127.0.0.1:LDN_IPC_PORT (11453).  The
-   sysmodule's IPC thread receives it, wraps it as a synthetic IPv4+UDP
-   frame, and forwards it to the relay server over UDP.
-   This is cleaner than SO_REUSEPORT because:
-     - No loop-prevention logic needed (loopback is always local traffic).
-     - Does not require port sharing with ldn_mitm's main UDP socket.
+2. LDUdpSocket  (lan_discovery.hpp / lan_discovery.cpp)
+   - getBroadcast() returns 10.13.255.255 when active
+   - sendBroadcast() overrides send both normal LAN broadcast AND IPC unicast
+     to 127.0.0.1:LDN_IPC_PORT (broadcast always goes to relay)
 
-3. getFakeMac() / getNodeInfo()  use the virtual IP (10.13.x.y) instead of
-   the real WiFi IP so that station-to-AP TCP connections use the relay path.
+3. getFakeMac() / getNodeInfo()
+   Use virtual IP (10.13.x.y) so advertised IPs route through the relay.
 
-4. getBroadcast() returns 10.13.255.255 so Scan packets travel through the
-   relay rather than the real WiFi broadcast domain.
-
-5. initialize() skips nifmSetLocalNetworkMode(true) when switch-lan-play is
-   active; that call disables internet access and would sever the relay UDP
-   connection.
+4. initialize()
+   Skips nifmSetLocalNetworkMode(true) when switch-lan-play is active to
+   keep the internet connection alive for the relay UDP socket.
 
 Apply with: patch -p1 -d ldn_mitm < patches/0001-lanplay-bridge.patch
 
 diff --git a/ldn_mitm/source/lan_discovery.cpp b/ldn_mitm/source/lan_discovery.cpp
-index 30b77d0..c05b3b4 100644
+index 30b77d0..fa7e2ba 100644
 --- a/ldn_mitm/source/lan_discovery.cpp
 +++ b/ldn_mitm/source/lan_discovery.cpp
 @@ -4,6 +4,7 @@
@@ -45,27 +48,39 @@ index 30b77d0..c05b3b4 100644
  
  namespace ams::mitm::ldn {
  
-@@ -128,6 +129,13 @@ namespace ams::mitm::ldn {
-     }
+@@ -84,7 +85,47 @@ namespace ams::mitm::ldn {
+         discovery->setState(CommState::Error);
+     };
  
-     u32 LDUdpSocket::getBroadcast() {
-+        // When switch-lan-play is active, use the virtual subnet broadcast so
-+        // that Scan packets travel through the relay rather than the real WiFi.
+-    int LDTcpSocket::onRead() {
++    u32 LDUdpSocket::getBroadcast() {
++        // When switch-lan-play is active, use the virtual subnet broadcast
++        // (10.13.255.255) so Scan packets travel through the relay.
 +        uint32_t vbc = lanplay_get_broadcast();
-+        if (vbc != 0) {
-+            return vbc;
-+        }
++        if (vbc != 0) return vbc;
 +
-         u32 address, netmask, gateway, primary_dns, secondary_dns;
-         Result rc = nifmGetCurrentIpConfigInfo(&address, &netmask, &gateway, &primary_dns, &secondary_dns);
-         address = ntohl(address);
-@@ -140,6 +148,21 @@ namespace ams::mitm::ldn {
-         return ret;
-     }
- 
-+    // sendBroadcast overrides: perform the normal LAN broadcast AND, when
-+    // switch-lan-play is active, send directly to the sysmodule's IPC socket
-+    // (127.0.0.1:LDN_IPC_PORT) so it can relay the packet to the server over UDP.
++        u32 address, netmask, gateway, primary_dns, secondary_dns;
++        Result rc = nifmGetCurrentIpConfigInfo(&address, &netmask, &gateway,
++                                               &primary_dns, &secondary_dns);
++        address = ntohl(address);
++        netmask = ntohl(netmask);
++        if (R_FAILED(rc)) {
++            LogFormat("Broadcast failed to get ip");
++            return 0xFFFFFFFF;
++        }
++        return address | ~netmask;
++    }
++
++    /*
++     * sendBroadcast overrides — when switch-lan-play is active, ALL
++     * outbound LDN datagrams go to 127.0.0.1:LDN_IPC_PORT.  Each IPC
++     * message carries a 4-byte destination IPv4 prefix (network byte order)
++     * followed by the LDN payload.  This applies to broadcasts (Scan) AND
++     * to unicast replies (ScanResp) so the relay receives the correct dst IP.
++     *
++     * The normal LAN broadcast is still sent as well; it is a no-op when
++     * other consoles on the WiFi are not in the 10.13.0.0/16 subnet.
++     */
 +    int LDUdpSocket::sendBroadcast(LANPacketType type, const void *data, size_t size) {
 +        int ret = UdpLanSocketBase::sendBroadcast(type, data, size);
 +        struct sockaddr_in ipc;
@@ -78,16 +93,36 @@ index 30b77d0..c05b3b4 100644
 +        return this->sendBroadcast(type, nullptr, 0);
 +    }
 +
++
+         LogFormat("LDTcpSocket::onRead");
+         const auto state = this->discovery->getState();
+         if (state == CommState::Station || state == CommState::StationConnected) {
+@@ -127,19 +168,6 @@ namespace ams::mitm::ldn {
+         this->discovery->onDisconnectFromHost();
+     }
+ 
+-    u32 LDUdpSocket::getBroadcast() {
+-        u32 address, netmask, gateway, primary_dns, secondary_dns;
+-        Result rc = nifmGetCurrentIpConfigInfo(&address, &netmask, &gateway, &primary_dns, &secondary_dns);
+-        address = ntohl(address);
+-        netmask = ntohl(netmask);
+-        if (R_FAILED(rc)) {
+-            LogFormat("Broadcast failed to get ip");
+-            return 0xFFFFFFFF;
+-        }
+-        u32 ret = address | ~netmask;
+-        return ret;
+-    }
+-
      void LANDiscovery::onSyncNetwork(NetworkInfo *info) {
          this->networkInfo = *info;
          if (this->state == CommState::Station) {
-@@ -225,6 +248,16 @@ namespace ams::mitm::ldn {
+@@ -225,6 +253,15 @@ namespace ams::mitm::ldn {
          mac->raw[0] = 0x02;
          mac->raw[1] = 0x00;
  
-+        // Use the virtual IP when switch-lan-play is active so the BSSID
-+        // matches the address advertised in NodeInfo (which also uses the
-+        // virtual IP).  Falls back to the real NIFM IP otherwise.
++        // Use the virtual IP when switch-lan-play is active so BSSID
++        // and NodeInfo.ipv4Address both reflect the relay address.
 +        uint32_t vip = lanplay_get_virtual_ip();
 +        if (vip != 0) {
 +            u32 ip_be = htonl(vip);
@@ -98,7 +133,7 @@ index 30b77d0..c05b3b4 100644
          u32 ip;
          Result rc = nifmGetCurrentIpAddress(&ip);
          if (R_SUCCEEDED(rc)) {
-@@ -522,13 +555,25 @@ namespace ams::mitm::ldn {
+@@ -522,13 +559,21 @@ namespace ams::mitm::ldn {
  
      Result LANDiscovery::getNodeInfo(NodeInfo *node, const UserConfig *userConfig, u16 localCommunicationVersion) {
          u32 ipAddress;
@@ -107,18 +142,14 @@ index 30b77d0..c05b3b4 100644
 -        {
 -            return rc;
 +
-+        // When switch-lan-play is active, use the virtual IP it has assigned.
-+        // This ensures that station-to-AP TCP connections are routed through
-+        // the relay (because the other player's switch-lan-play advertises the
-+        // same virtual subnet) rather than being sent directly over WiFi where
-+        // the 10.13.x.x address is unreachable for remote players.
++        // Use virtual IP when switch-lan-play is active; connections to
++        // this node's IP will be routed through the relay.
 +        uint32_t vip = lanplay_get_virtual_ip();
 +        if (vip != 0) {
 +            ipAddress = vip;
 +        } else {
 +            Result rc = nifmGetCurrentIpAddress(&ipAddress);
-+            if (R_FAILED(rc))
-+            {
++            if (R_FAILED(rc)) {
 +                return rc;
 +            }
 +            ipAddress = ntohl(ipAddress);
@@ -130,7 +161,7 @@ index 30b77d0..c05b3b4 100644
          if (R_FAILED(rc)) {
              return rc;
          }
-@@ -775,10 +820,18 @@ namespace ams::mitm::ldn {
+@@ -775,10 +820,16 @@ namespace ams::mitm::ldn {
              return rc;
          }
  
@@ -138,10 +169,8 @@ index 30b77d0..c05b3b4 100644
 -        if (R_FAILED(rc)) {
 -            LogFormat("nifmSetLocalNetworkMode failed %x", rc);
 -            return rc;
-+        // Only set local-network mode when switch-lan-play is NOT running.
-+        // When switch-lan-play is active the internet connection must remain
-+        // up so its relay UDP socket can reach the server.  Local-network mode
-+        // disables internet access and would sever that relay connection.
++        // Skip SetLocalNetworkMode when switch-lan-play is active: that call
++        // disables the internet connection, which would sever the relay UDP link.
 +        if (!lanplay_is_active()) {
 +            rc = nifmSetLocalNetworkMode(&request, true);
 +            if (R_FAILED(rc)) {
@@ -154,94 +183,84 @@ index 30b77d0..c05b3b4 100644
  
          rc = nifmRequestSubmitAndWait(&request);
 diff --git a/ldn_mitm/source/lan_discovery.hpp b/ldn_mitm/source/lan_discovery.hpp
-index f5c083c..3defd76 100644
+index f5c083c..77f6b6d 100644
 --- a/ldn_mitm/source/lan_discovery.hpp
 +++ b/ldn_mitm/source/lan_discovery.hpp
-@@ -100,6 +100,14 @@ namespace ams::mitm::ldn {
+@@ -100,9 +100,15 @@ namespace ams::mitm::ldn {
              }
              int onRead() override;
              void onClose() override;
 +            /**
-+             * sendBroadcast overrides — when switch-lan-play is active, forward
-+             * the datagram to the private IPC socket (127.0.0.1:LDN_IPC_PORT) so
-+             * the sysmodule can relay it over UDP to the server, in addition to
-+             * the normal LAN broadcast.
++             * sendBroadcast overrides — when switch-lan-play is active, ALL
++             * outbound datagrams (broadcasts AND unicast replies such as ScanResp)
++             * are forwarded to 127.0.0.1:LDN_IPC_PORT with a 4-byte destination
++             * IPv4 prefix so the sysmodule can relay them with the correct dst IP.
 +             */
 +            int sendBroadcast(LANPacketType type, const void *data, size_t size);
 +            int sendBroadcast(LANPacketType type);
      };
- 
-     class LDTcpSocket : public TcpLanSocketBase, public Pollable {
+-
+-    class LDTcpSocket : public TcpLanSocketBase, public Pollable {
+         protected:
+             LANDiscovery *discovery;
+         public:
 
 diff --git a/ldn_mitm/source/lanplay_bridge.hpp b/ldn_mitm/source/lanplay_bridge.hpp
 new file mode 100644
 --- /dev/null
 +++ b/ldn_mitm/source/lanplay_bridge.hpp
-@@ -0,0 +1,68 @@
+@@ -0,0 +1,55 @@
 +#pragma once
-+
 +/**
-+ * lanplay_bridge — integration helpers between ldn_mitm and switch-lan-play.
++ * lanplay_bridge.hpp — interface between ldn_mitm and switch-lan-play sysmodule.
 + *
-+ * switch-lan-play writes its runtime state to sdmc:/tmp/lanplay.status
-+ * whenever it is active.  This module reads that file so that ldn_mitm can:
++ * switch-lan-play writes sdmc:/tmp/lanplay.status every ~2 seconds.
++ * These helpers read that file (with a ~1 second cache) and expose the
++ * sysmodule's current state to ldn_mitm.
 + *
-+ *  1. Advertise the VIRTUAL IP (10.13.x.y) instead of the real WiFi IP in
-+ *     its NetworkInfo / NodeInfo.  This ensures that station-to-AP TCP
-+ *     connections are routed through the relay.
-+ *
-+ *  2. Send LAN-discovery outbound packets via the private IPC channel
-+ *     (127.0.0.1:LDN_IPC_PORT) instead of broadcasting on the LAN.
-+ *     switch-lan-play's IPC thread receives them, wraps them as IPv4+UDP,
-+ *     and forwards them to the relay server.
-+ *
-+ *  3. Skip nifmSetLocalNetworkMode(true) when switch-lan-play is active.
-+ *     That call disables internet access which would sever the relay UDP
-+ *     connection that switch-lan-play depends on.
-+ *
-+ * All functions cache the status file for ~1 s so repeated calls in the
-+ * polling loop are cheap.
++ * IPC channel: when switch-lan-play is active, ALL ldn_mitm outbound
++ * LAN-discovery packets (Scan, ScanResp, ...) are sent to the sysmodule's
++ * private loopback socket at 127.0.0.1:LDN_IPC_PORT.  Each message carries
++ * a 4-byte destination IPv4 prefix followed by the LDN protocol payload,
++ * so the sysmodule can correctly build unicast OR broadcast relay frames.
 + */
++
++#include <switch.h>
++#include <netinet/in.h>
++#include <stdint.h>
++#include <stdbool.h>
++
++/* Port that the sysmodule's IPC socket listens on (loopback only) */
++static const uint16_t LDN_IPC_PORT = 11453;
 +
 +#ifdef __cplusplus
 +extern "C" {
 +#endif
 +
-+#include <stdint.h>
-+#include <stdbool.h>
-+#include <sys/socket.h>
-+#include <netinet/in.h>
-+
-+/** Private loopback IPC port: ldn_mitm → switch-lan-play sysmodule. */
-+#define LDN_IPC_PORT 11453
-+
 +/**
-+ * Returns true when sdmc:/tmp/lanplay.status contains "active=1".
-+ * Returns false if the file is absent or switch-lan-play is not running.
++ * lanplay_is_active — returns true if switch-lan-play is currently running
++ * and has a valid virtual IP assigned.
 + */
-+bool lanplay_is_active(void);
++bool     lanplay_is_active(void);
 +
 +/**
-+ * Returns the virtual IP in HOST byte order (e.g. 0x0A0D0102 for 10.13.1.2),
-+ * or 0 if switch-lan-play is not active / status file missing.
++ * lanplay_get_virtual_ip — returns this console's virtual IP (host byte order)
++ * as assigned by switch-lan-play, or 0 if not active.
 + */
 +uint32_t lanplay_get_virtual_ip(void);
 +
 +/**
-+ * Returns the broadcast address for the virtual /16 subnet in HOST byte order
-+ * (10.13.255.255 = 0x0A0DFFFF when switch-lan-play is active), or 0.
++ * lanplay_get_broadcast — returns the virtual subnet broadcast address
++ * (10.13.255.255, host byte order) when switch-lan-play is active, or 0.
 + */
 +uint32_t lanplay_get_broadcast(void);
 +
 +/**
-+ * Fills *out with the sockaddr_in for the switch-lan-play IPC socket
-+ * (127.0.0.1:LDN_IPC_PORT) so ldn_mitm can sendto() LAN-discovery packets
-+ * directly to it.
-+ *
-+ * Returns true when switch-lan-play is active (and *out was filled),
-+ * false otherwise.
++ * lanplay_get_ipc_sockaddr — fills *out with the sysmodule's IPC socket
++ * address (127.0.0.1:LDN_IPC_PORT) when switch-lan-play is active.
++ * Returns true on success, false if not active.
 + */
-+bool lanplay_get_ipc_sockaddr(struct sockaddr_in *out);
++bool     lanplay_get_ipc_sockaddr(struct sockaddr_in *out);
 +
 +#ifdef __cplusplus
 +}
@@ -251,121 +270,90 @@ diff --git a/ldn_mitm/source/lanplay_bridge.cpp b/ldn_mitm/source/lanplay_bridge
 new file mode 100644
 --- /dev/null
 +++ b/ldn_mitm/source/lanplay_bridge.cpp
-@@ -0,0 +1,117 @@
+@@ -0,0 +1,86 @@
 +/**
-+ * lanplay_bridge.cpp — reads switch-lan-play's runtime status file and
-+ * exposes the virtual IP / IPC helpers declared in lanplay_bridge.hpp.
++ * lanplay_bridge.cpp — reads sdmc:/tmp/lanplay.status and exposes the
++ * switch-lan-play sysmodule state to ldn_mitm.
 + *
-+ * The status file (sdmc:/tmp/lanplay.status) is written by the switch-lan-play
-+ * sysmodule every 2 seconds while it is active.  Format:
-+ *
++ * The status file is written by switch-lan-play every ~2 seconds:
 + *   active=1
-+ *   error=
 + *   my_ip=10.13.X.Y
-+ *   relay=server:11451
-+ *   up_pkt=...
-+ *   ...
 + *
-+ * We parse only "active=" and "my_ip=", cache the result for ~1 s to avoid
-+ * hammering the SD card on every poll iteration.
++ * We cache the parsed result for ~1 second (19 200 000 Switch CPU ticks
++ * at the standard 19.2 MHz ARM PMU clock) to avoid spamming SD card reads.
 + */
-+
 +#include "lanplay_bridge.hpp"
 +#include <stdio.h>
 +#include <string.h>
 +#include <arpa/inet.h>
-+#include <switch.h>   /* armGetSystemTick */
 +
-+/* -------------------------------------------------------------------------
-+ * Cache — refreshed at most once per second
-+ * ---------------------------------------------------------------------- */
++#define STATUS_FILE "sdmc:/tmp/lanplay.status"
 +
-+/* Horizon Switch hardware: CPU tick rate = 19,200,000 Hz (19.2 MHz).
-+ * One second ≈ 19,200,000 ticks.  We re-read the status file once per second
-+ * to keep the information fresh without hammering the SD card. */
-+static const u64 CACHE_TICKS = 19200000ULL;
++/* Cache: refresh after ~1 second (19.2 MHz * 1 s) */
++#define CACHE_TICKS 19200000ULL
 +
-+static bool     s_cached      = false;
-+static bool     s_active      = false;
-+static uint32_t s_virtual_ip  = 0;   /* host byte order */
-+static uint32_t s_broadcast   = 0;   /* host byte order */
-+static u64      s_last_tick   = 0;
++struct BridgeState {
++    bool     active;
++    uint32_t virtual_ip; /* host byte order */
++    u64      last_tick;
++};
 +
-+static void refresh_cache(void)
-+{
++static BridgeState g_state = { false, 0, 0 };
++
++static void refresh_if_needed(void) {
 +    u64 now = armGetSystemTick();
-+    if (s_cached && (now - s_last_tick) < CACHE_TICKS)
-+        return;
++    if (now - g_state.last_tick < CACHE_TICKS) return;
 +
-+    s_last_tick = now;
-+    s_cached    = true;
++    g_state.active     = false;
++    g_state.virtual_ip = 0;
++    g_state.last_tick  = now;
 +
-+    FILE *f = fopen("sdmc:/tmp/lanplay.status", "r");
-+    if (!f) {
-+        s_active     = false;
-+        s_virtual_ip = 0;
-+        s_broadcast  = 0;
-+        return;
-+    }
++    FILE *f = fopen(STATUS_FILE, "r");
++    if (!f) return;
 +
-+    bool     active = false;
-+    uint32_t ip     = 0;
-+
-+    char line[256];
++    char line[128];
++    bool saw_active = false;
 +    while (fgets(line, sizeof(line), f)) {
-+        /* Strip trailing newline / carriage return */
-+        size_t len = strlen(line);
-+        while (len > 0 && (line[len - 1] == '\n' || line[len - 1] == '\r'))
-+            line[--len] = '\0';
-+
-+        if (strcmp(line, "active=1") == 0) {
-+            active = true;
-+        } else if (strncmp(line, "my_ip=", 6) == 0 && line[6] != '\0') {
-+            struct in_addr addr;
-+            if (inet_aton(line + 6, &addr) == 1)
-+                ip = ntohl(addr.s_addr);
++        if (strncmp(line, "active=1", 8) == 0) {
++            saw_active = true;
++        } else if (strncmp(line, "my_ip=", 6) == 0) {
++            char ip_str[32] = {0};
++            if (sscanf(line + 6, "%31s", ip_str) == 1) {
++                struct in_addr a;
++                if (inet_aton(ip_str, &a) == 1) {
++                    /* ntohl: status file IP is human-readable dotted-decimal */
++                    g_state.virtual_ip = ntohl(a.s_addr);
++                }
++            }
 +        }
 +    }
 +    fclose(f);
-+
-+    s_active     = active && (ip != 0);
-+    s_virtual_ip = s_active ? ip                              : 0;
-+    /* Virtual /16 broadcast: keep top two octets, set bottom two to 0xFF */
-+    s_broadcast  = s_active ? ((ip & 0xFFFF0000u) | 0xFFFFu) : 0;
++    g_state.active = saw_active && (g_state.virtual_ip != 0);
 +}
 +
-+/* -------------------------------------------------------------------------
-+ * Public API
-+ * ---------------------------------------------------------------------- */
-+
-+bool lanplay_is_active(void)
-+{
-+    refresh_cache();
-+    return s_active;
++bool lanplay_is_active(void) {
++    refresh_if_needed();
++    return g_state.active;
 +}
 +
-+uint32_t lanplay_get_virtual_ip(void)
-+{
-+    refresh_cache();
-+    return s_virtual_ip;
++uint32_t lanplay_get_virtual_ip(void) {
++    refresh_if_needed();
++    return g_state.active ? g_state.virtual_ip : 0;
 +}
 +
-+uint32_t lanplay_get_broadcast(void)
-+{
-+    refresh_cache();
-+    return s_broadcast;
++uint32_t lanplay_get_broadcast(void) {
++    refresh_if_needed();
++    if (!g_state.active) return 0;
++    /* Virtual subnet is 10.13.0.0/16; broadcast = 10.13.255.255 */
++    return (10u << 24) | (13u << 16) | 0xFFFFu;
 +}
 +
-+bool lanplay_get_ipc_sockaddr(struct sockaddr_in *out)
-+{
-+    refresh_cache();
-+    if (!s_active)
-+        return false;
-+
++bool lanplay_get_ipc_sockaddr(struct sockaddr_in *out) {
++    refresh_if_needed();
++    if (!g_state.active) return false;
 +    memset(out, 0, sizeof(*out));
 +    out->sin_family      = AF_INET;
-+    /* 127.0.0.1 in network byte order */
-+    out->sin_addr.s_addr = htonl(INADDR_LOOPBACK);
++    out->sin_addr.s_addr = htonl(INADDR_LOOPBACK); /* 127.0.0.1 */
 +    out->sin_port        = htons(LDN_IPC_PORT);
 +    return true;
 +}

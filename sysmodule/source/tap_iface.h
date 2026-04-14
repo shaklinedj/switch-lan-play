@@ -48,15 +48,14 @@ void tap_recv_thread_fn(void *arg);
  * ldn_bridge_thread_fn — IPC bridge thread for ldn_mitm integration.
  *
  * Listens on the private loopback UDP socket (127.0.0.1:LDN_IPC_PORT).
- * ldn_mitm (patched) sends its outgoing LAN-discovery datagrams here when
- * switch-lan-play is active.  For each received datagram this thread builds
- * a synthetic IPv4+UDP frame (src=my_ip, dst=10.13.255.255) and forwards it
- * via lan_client_send_ipv4() to the relay server so all other players receive
- * it as if it were a real LAN broadcast.
+ * ldn_mitm (patched) sends ALL outgoing LAN-discovery datagrams here when
+ * switch-lan-play is active.  Each message has the format:
+ *   [4 bytes: IPv4 destination address, network byte order]
+ *   [N bytes: LDN protocol packet (LANPacketHeader + payload)]
  *
- * No loop-prevention needed: traffic on 127.0.0.1 is always local (ldn_mitm).
- * Relay-injected packets arrive via tap_send_packet() and go directly to
- * ldn_mitm's LDN_PORT socket — they never reach this IPC socket.
+ * The destination can be a broadcast (10.13.255.255, for Scan) or unicast
+ * (10.13.x.y, for ScanResp and other directed replies).  This allows the
+ * complete discovery exchange (Scan → ScanResp) to work through the relay.
  *
  * This thread is started only when lp->ldn_fd >= 0.  It exits when
  * lp->running becomes false (the IPC socket has a 1-second SO_RCVTIMEO).
