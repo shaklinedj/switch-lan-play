@@ -63,6 +63,7 @@ struct pcap_pkthdr {
 #define LC_FRAG_COUNT        100
 #define LP_KEY_LEN           20
 #define LDN_PORT             11452  /* ldn_mitm LAN-discovery UDP/TCP port */
+#define LDN_IPC_PORT         11453  /* private loopback IPC: ldn_mitm → sysmodule */
 
 /* -------------------------------------------------------------------------
  * Logging  (mirrors base/include/base/llog.h)
@@ -318,9 +319,10 @@ struct lan_play {
     uint8_t my_ip[4];    /* assigned IP in 10.13.0.0/16 */
     uint8_t my_mac[6];   /* fake Ethernet MAC */
 
-    /* LDN bridge — captures ldn_mitm's outgoing LAN-discovery UDP broadcasts
-     * (port LDN_PORT) via SO_REUSEPORT and forwards them to the relay so
-     * that ldn_mitm-mediated "wireless local" games work over the internet.
+    /* LDN IPC bridge — private loopback UDP server on 127.0.0.1:LDN_IPC_PORT.
+     * ldn_mitm (patched) sends its outgoing LAN-discovery datagrams directly
+     * to this socket instead of broadcasting on the LAN port.  No SO_REUSEPORT
+     * or loop-prevention logic needed; all traffic on 127.0.0.1 is local.
      * ldn_fd = -1 when not available (non-fatal). */
     int     ldn_fd;
     Thread  ldn_bridge_thread;

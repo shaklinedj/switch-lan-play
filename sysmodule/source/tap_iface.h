@@ -45,21 +45,21 @@ int  tap_send_packet(struct lan_play *lp, const void *eth_frame, int len);
 void tap_recv_thread_fn(void *arg);
 
 /**
- * ldn_bridge_thread_fn — background thread for ldn_mitm integration.
+ * ldn_bridge_thread_fn — IPC bridge thread for ldn_mitm integration.
  *
- * Opens a UDP socket bound to INADDR_ANY:LDN_PORT with SO_REUSEPORT and
- * SO_BROADCAST so it receives a copy of every UDP datagram that ldn_mitm
- * sends on the LAN-discovery port (11452).  For each received datagram it
- * builds a synthetic IPv4+UDP frame (src = our virtual IP, dst = the virtual
- * subnet broadcast 10.13.255.255) and forwards it to the relay server so
- * other players' sysmodules inject it into their local network stacks.
+ * Listens on the private loopback UDP socket (127.0.0.1:LDN_IPC_PORT).
+ * ldn_mitm (patched) sends its outgoing LAN-discovery datagrams here when
+ * switch-lan-play is active.  For each received datagram this thread builds
+ * a synthetic IPv4+UDP frame (src=my_ip, dst=10.13.255.255) and forwards it
+ * via lan_client_send_ipv4() to the relay server so all other players receive
+ * it as if it were a real LAN broadcast.
  *
- * Loop prevention: packets whose source address matches the virtual-subnet
- * broadcast (i.e. packets that were injected from the relay and looped back
- * via the kernel) are silently dropped.
+ * No loop-prevention needed: traffic on 127.0.0.1 is always local (ldn_mitm).
+ * Relay-injected packets arrive via tap_send_packet() and go directly to
+ * ldn_mitm's LDN_PORT socket — they never reach this IPC socket.
  *
- * This thread is started only when lp->ldn_fd >= 0 (i.e. the bind
- * succeeded).  It exits as soon as lp->running becomes false.
+ * This thread is started only when lp->ldn_fd >= 0.  It exits when
+ * lp->running becomes false (the IPC socket has a 1-second SO_RCVTIMEO).
  */
 void ldn_bridge_thread_fn(void *arg);
 

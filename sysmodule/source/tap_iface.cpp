@@ -15,15 +15,11 @@
  * Outgoing-packet capture
  * -----------------------
  * On most BSD kernels, locally-generated outgoing packets are NOT visible
- * to a raw socket.  For LAN discovery this is acceptable: the game sends a
- * broadcast, which is echoed back via the relay to all other players
- * (including our own sysmodule).  The sysmodule therefore only needs to
- * (a) forward outgoing packets from a UDP listener on the LAN-play ports,
- * and (b) inject inbound packets from the relay using the raw socket.
- *
- * For outgoing packet capture we bind an additional UDP socket to port 0
- * with SO_REUSEPORT and SO_BROADCAST so we can receive the game's own
- * broadcasts on the subnet.
+ * to a raw socket.  For LAN discovery this is acceptable: ldn_mitm (patched)
+ * sends its outgoing Scan broadcasts explicitly to the private IPC socket at
+ * 127.0.0.1:LDN_IPC_PORT (11453) so the sysmodule can relay them over UDP.
+ * Inbound packets from the relay are injected via tap_send_packet() and
+ * delivered to ldn_mitm's LDN_PORT (11452) socket by the kernel.
  */
 
 #include "tap_iface.h"
@@ -107,55 +103,45 @@ int tap_init(struct lan_play *lp)
     LLOG(LLOG_INFO, "tap: raw socket fd=%d opened", lp->raw_fd);
 
     /* ------------------------------------------------------------------ */
-    /* LDN bridge socket — captures ldn_mitm's outgoing LAN-discovery     */
-    /* UDP broadcasts on port LDN_PORT (11452) via SO_REUSEPORT.           */
-    /*                                                                      */
-    /* When ldn_mitm (patched to use the virtual subnet) sends a Scan      */
-    /* broadcast to 10.13.255.255:11452, the kernel loops the broadcast    */
-    /* back to every other socket bound to port 11452 on the same host.    */
-    /* Our ldn_fd socket receives this copy, builds a synthetic IPv4+UDP   */
-    /* frame, and hands it off to lan_client_send_ipv4() so it travels     */
-    /* to the relay and from there to all other players.                   */
-    /* ------------------------------------------------------------------ */
+    /* LDN IPC socket — private loopback UDP server on 127.0.0.1:LDN_IPC_PORT.
+     *
+     * When ldn_mitm (patched) has switch-lan-play active it sends its
+     * outgoing LAN-discovery datagrams (Scan, ScanResp, Connect, SyncNetwork)
+     * directly to 127.0.0.1:LDN_IPC_PORT instead of broadcasting on the LAN.
+     *
+     * This is cleaner than the REUSEPORT approach because:
+     *   - No SO_REUSEPORT / SO_BROADCAST needed.
+     *   - All traffic on 127.0.0.1:LDN_IPC_PORT is unambiguously from ldn_mitm
+     *     (no loop-prevention filter needed).
+     *   - Works even if another process owns port LDN_PORT (11452).
+     * ------------------------------------------------------------------ */
     lp->ldn_fd = -1;
 
     int ldn_sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (ldn_sock < 0) {
-        LLOG(LLOG_WARNING, "tap: LDN bridge socket() failed: %s (ldn_mitm integration disabled)",
+        LLOG(LLOG_WARNING, "tap: LDN IPC socket() failed: %s (ldn_mitm IPC disabled)",
              strerror(errno));
     } else {
-        int on = 1;
+        /* Short receive timeout so the thread can check lp->running */
+        struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+        if (setsockopt(ldn_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv)) < 0)
+            LLOG(LLOG_WARNING, "tap: LDN SO_RCVTIMEO failed: %s", strerror(errno));
 
-        /* Allow multiple processes to share port LDN_PORT */
-        if (setsockopt(ldn_sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof(on)) < 0)
-            LLOG(LLOG_WARNING, "tap: LDN SO_REUSEADDR failed: %s", strerror(errno));
-#ifdef SO_REUSEPORT
-        if (setsockopt(ldn_sock, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) < 0)
-            LLOG(LLOG_WARNING, "tap: LDN SO_REUSEPORT failed: %s", strerror(errno));
-#endif
-        /* Required to receive and send UDP broadcasts */
-        if (setsockopt(ldn_sock, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on)) < 0)
-            LLOG(LLOG_WARNING, "tap: LDN SO_BROADCAST failed: %s", strerror(errno));
+        /* Bind to loopback only — no external process should reach this port */
+        struct sockaddr_in ipc_addr;
+        memset(&ipc_addr, 0, sizeof(ipc_addr));
+        ipc_addr.sin_family      = AF_INET;
+        ipc_addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  /* 127.0.0.1 */
+        ipc_addr.sin_port        = htons(LDN_IPC_PORT);
 
-        /* Bind to all interfaces so we see broadcasts from ldn_mitm */
-        struct sockaddr_in ldn_addr;
-        memset(&ldn_addr, 0, sizeof(ldn_addr));
-        ldn_addr.sin_family      = AF_INET;
-        ldn_addr.sin_addr.s_addr = INADDR_ANY;
-        ldn_addr.sin_port        = htons(LDN_PORT);
-
-        if (bind(ldn_sock, (struct sockaddr *)&ldn_addr, sizeof(ldn_addr)) < 0) {
-            LLOG(LLOG_WARNING, "tap: LDN bind(port %d) failed: %s "
-                 "(another process may own the port — ldn_mitm integration disabled)",
-                 LDN_PORT, strerror(errno));
+        if (bind(ldn_sock, (struct sockaddr *)&ipc_addr, sizeof(ipc_addr)) < 0) {
+            LLOG(LLOG_WARNING, "tap: LDN IPC bind(127.0.0.1:%d) failed: %s "
+                 "(ldn_mitm IPC disabled)", LDN_IPC_PORT, strerror(errno));
             close(ldn_sock);
         } else {
-            /* Short receive timeout so the thread can check lp->running */
-            struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-            setsockopt(ldn_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             lp->ldn_fd = ldn_sock;
-            LLOG(LLOG_INFO, "tap: LDN bridge socket fd=%d (port %d) ready",
-                 lp->ldn_fd, LDN_PORT);
+            LLOG(LLOG_INFO, "tap: LDN IPC socket fd=%d (127.0.0.1:%d) ready",
+                 lp->ldn_fd, LDN_IPC_PORT);
         }
     }
 
@@ -288,40 +274,37 @@ void tap_recv_thread_fn(void *arg)
  * ---------------------------------------------------------------------- */
 
 /**
- * ldn_bridge_thread_fn — captures ldn_mitm's outgoing LAN-discovery UDP
- * broadcasts (port LDN_PORT) and forwards them to the relay server.
+ * ldn_bridge_thread_fn — receives ldn_mitm's outgoing LAN-discovery packets
+ * via the private IPC channel (127.0.0.1:LDN_IPC_PORT) and forwards them to
+ * the relay server.
  *
  * Packet flow (outbound from ldn_mitm):
- *   ldn_mitm sends Scan/ScanResp UDP → 10.13.255.255:LDN_PORT
- *   ↓  kernel loops broadcast back to our REUSEPORT socket
+ *   ldn_mitm sends Scan/ScanResp/Connect UDP → 127.0.0.1:LDN_IPC_PORT
  *   ↓  ldn_bridge_thread_fn receives it
  *   ↓  builds a synthetic IPv4+UDP frame: src=my_ip, dst=10.13.255.255
  *   ↓  lan_client_send_ipv4() → relay server → other players' sysmodules
- *   ↓  tap_send_packet() injects packet into each player's kernel
- *   ↓  each player's ldn_mitm receives it on their port LDN_PORT socket
+ *   ↓  tap_send_packet() injects packet into each player's kernel → port LDN_PORT
+ *   ↓  each player's ldn_mitm receives it on their port LDN_PORT UDP socket
  *
- * Loop prevention:
- *   When the relay delivers a packet to this console, tap_send_packet()
- *   injects it; the kernel delivers it to ldn_mitm AND to our ldn_fd
- *   socket.  We must NOT relay it a second time.  We detect this by
- *   checking whether the source IP differs from our own virtual IP: only
- *   packets originating on THIS console (from ldn_mitm) have
- *   src == lp->my_ip.  Packets injected from the relay always have a
- *   different source IP (the remote player's virtual IP) and are dropped.
+ * No loop-prevention needed: 127.0.0.1 traffic is exclusively local (from
+ * ldn_mitm on this console).  Relay-injected packets arrive via tap_send_packet
+ * and are delivered directly to ldn_mitm's LDN_PORT socket — they never reach
+ * this IPC socket.
  */
 void ldn_bridge_thread_fn(void *arg)
 {
     struct lan_play *lp = (struct lan_play *)arg;
 
     if (lp->ldn_fd < 0) {
-        LLOG(LLOG_WARNING, "ldn_bridge: socket not available, thread not started");
+        LLOG(LLOG_WARNING, "ldn_bridge: IPC socket not available, thread not started");
         return;
     }
 
-    LLOG(LLOG_INFO, "ldn_bridge: thread started (fd=%d)", lp->ldn_fd);
+    LLOG(LLOG_INFO, "ldn_bridge: IPC thread started (fd=%d, port %d)",
+         lp->ldn_fd, LDN_IPC_PORT);
 
     /* Virtual subnet broadcast: 10.13.255.255 */
-    static const uint8_t k_vbc[4] = { 10, 13, 0xFF, 0xFF };
+    static const uint8_t k_virtual_broadcast[4] = { 10, 13, 0xFF, 0xFF };
 
     /* UDP payload received from ldn_mitm */
     uint8_t udp_payload[TAP_BUF_SIZE];
@@ -330,24 +313,12 @@ void ldn_bridge_thread_fn(void *arg)
     uint8_t frame[ETHER_HEADER_LEN + IPV4_HEADER_LEN + UDP_OFF_END + TAP_BUF_SIZE];
 
     while (lp->running) {
-        struct sockaddr_in from;
-        socklen_t from_len = sizeof(from);
-
-        ssize_t n = recvfrom(lp->ldn_fd, udp_payload, sizeof(udp_payload), 0,
-                             (struct sockaddr *)&from, &from_len);
+        ssize_t n = recv(lp->ldn_fd, udp_payload, sizeof(udp_payload), 0);
 
         if (n <= 0) {
             if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                LLOG(LLOG_ERROR, "ldn_bridge: recvfrom error: %s", strerror(errno));
+                LLOG(LLOG_ERROR, "ldn_bridge: recv error: %s", strerror(errno));
             continue;
-        }
-
-        /* Loop prevention: only forward packets that came from our own    */
-        /* virtual IP (i.e. from local ldn_mitm).  Packets injected from  */
-        /* the relay have a remote virtual IP as source — skip them.       */
-        const uint8_t *src4 = (const uint8_t *)&from.sin_addr.s_addr;
-        if (!CMP_IPV4(src4, lp->my_ip)) {
-            continue; /* not from local ldn_mitm — already injected from relay */
         }
 
         /* ---------------------------------------------------------------- */
@@ -366,14 +337,14 @@ void ldn_bridge_thread_fn(void *arg)
 
         ip[IPV4_OFF_VER_LEN]   = 0x45;   /* version=4, IHL=5 (no options) */
         ip[IPV4_OFF_DSCP_ECN]  = 0x00;
-        WRITE_NET16(ip, IPV4_OFF_TOTAL_LEN,        ip_total_len);
-        WRITE_NET16(ip, IPV4_OFF_ID,               (uint16_t)(lp->frag_id++ & 0xFFFF));
+        WRITE_NET16(ip, IPV4_OFF_TOTAL_LEN,         ip_total_len);
+        WRITE_NET16(ip, IPV4_OFF_ID,                (uint16_t)(lp->frag_id++ & 0xFFFF));
         WRITE_NET16(ip, IPV4_OFF_FLAGS_FRAG_OFFSET, 0x0000);
         ip[IPV4_OFF_TTL]       = 64;
         ip[IPV4_OFF_PROTOCOL]  = IPV4_PROTOCOL_UDP;
-        WRITE_NET16(ip, IPV4_OFF_CHECKSUM, 0);     /* computed below */
-        CPY_IPV4(ip + IPV4_OFF_SRC, lp->my_ip);   /* source = our virtual IP */
-        CPY_IPV4(ip + IPV4_OFF_DST, k_vbc);        /* dest   = 10.13.255.255  */
+        WRITE_NET16(ip, IPV4_OFF_CHECKSUM, 0);             /* computed below */
+        CPY_IPV4(ip + IPV4_OFF_SRC, lp->my_ip);           /* source = our virtual IP */
+        CPY_IPV4(ip + IPV4_OFF_DST, k_virtual_broadcast); /* dest   = 10.13.255.255  */
 
         /* IPv4 header checksum (one's complement of the header word sum) */
         uint32_t cksum = 0;
@@ -394,14 +365,12 @@ void ldn_bridge_thread_fn(void *arg)
         memcpy(udp + UDP_OFF_END, udp_payload, (size_t)n);
 
         /* ---------------------------------------------------------------- */
-        /* Forward the synthetic frame through the relay pipeline.           */
-        /*                                                                   */
-        /* lan_client_send_ipv4() expects a raw IPv4 packet (no Ethernet    */
-        /* header) so we pass ip, not frame.                                */
+        /* Forward via the relay pipeline.                                   */
+        /* lan_client_send_ipv4() expects raw IPv4 (no Ethernet header).    */
         /* ---------------------------------------------------------------- */
         lan_client_send_ipv4(lp, (void *)(ip + IPV4_OFF_DST),
                              ip, ip_total_len);
     }
 
-    LLOG(LLOG_INFO, "ldn_bridge: thread exiting");
+    LLOG(LLOG_INFO, "ldn_bridge: IPC thread exiting");
 }
