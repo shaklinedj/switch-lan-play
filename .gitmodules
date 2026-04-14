@@ -4,3 +4,6 @@
 [submodule "external/libuv"]
 	path = external/libuv
 	url = https://github.com/libuv/libuv.git
+[submodule "ldn_mitm"]
+	path = ldn_mitm
+	url = https://github.com/spacemeowx2/ldn_mitm.git

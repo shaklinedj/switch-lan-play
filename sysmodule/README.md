@@ -6,10 +6,41 @@ The sysmodule connects your Switch to a relay server over WiFi and bridges LAN-p
 game packets through it, letting you play with friends across the internet as if
 you were all on the same local network.
 
+## ldn_mitm integration
+
+This sysmodule works alongside **ldn_mitm** (included in the repo as a git submodule at `ldn_mitm/`)
+to support games that use Nintendo's wireless local ("Inalámbrico Local") mode instead of official
+LAN mode.
+
+### Packet flow with both sysmodules active
+
+```
+Game (Wireless Local mode)
+    │
+    ▼  ldn:u service call
+[ldn_mitm  — Title 4200000000000010]
+    │  intercepts LDN, emulates via UDP on 10.13.x.x:11452
+    ▼
+[switch-lan-play sysmodule — Title 42000000000000B1]
+    │  raw socket captures 10.13.0.0/16 packets
+    ▼
+Relay server (internet)
+    │
+    ▼
+Other players' consoles (same chain in reverse)
+```
+
+### SD card layout (both sysmodules)
+
+```
+sdmc:/atmosphere/contents/42000000000000B1/   ← this sysmodule
+sdmc:/atmosphere/contents/4200000000000010/   ← ldn_mitm
+```
+
+Pre-built binaries for both are included in the repo's `sd/` directory.
+Build from source with `make package` from the repo root.
+
 ---
-
-## How it works
-
 ```
 Switch (game in LAN mode)
     ↓

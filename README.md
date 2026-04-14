@@ -108,16 +108,52 @@ relay_addr = relay.ejemplo.com:11451
 
 ---
 
-## Jugar títulos sin modo LAN oficial (`ldn_mitm`)
+## Jugar títulos sin modo LAN oficial (`ldn_mitm`, integrado)
 
 Tu nueva versión instalada del Lan Play intercepta automáticamente juegos que traen un **"Modo LAN Oficial"** de fábrica (ej: Mario Kart 8 Deluxe usando L+R+L-Stick).
 ¿Pero qué pasa si quieres jugar a títulos como *Super Mario 3D World* o *Pokémon* que sólo tienen "Inalámbrico Local"?
 
-Para eso, **necesitas usar nuestro sysmodule nativo en combinación con `ldn_mitm`**.
-1. Descarga el Sysmodule oficial de `ldn_mitm` desde [su GitHub oficial](https://github.com/spacemeowx2/ldn_mitm/releases).
-2. Extrae el contenido en la raíz de tu MicroSD (creará su propia carpeta en `atmosphere/contents/` junto a la tuya).
-3. Reinicia tu Switch.
-4. Ahora, cuando entres al "Modo Local" de CUALQUIER juego inalámbrico, `ldn_mitm` convertirá las señales locales a señales LAN, y tu sysmodule secreto `switch-lan-play` las tomará y las disparará a la otra punta del planeta sin que los juegos se den cuenta.
+**`ldn_mitm` está incluido en este repositorio** (como submodule en `ldn_mitm/`) y su binario precompilado ya se encuentra en `sd/`. Los dos sysmodules trabajan juntos automáticamente:
+
+1. Copia el contenido de la carpeta `sd/` a la raíz de tu MicroSD.
+2. Reinicia tu Switch.
+3. Ahora, cuando entres al "Modo Local" de CUALQUIER juego inalámbrico, `ldn_mitm` (Title ID `4200000000000010`) convertirá las señales locales a señales LAN, y el sysmodule `switch-lan-play` (Title ID `42000000000000B1`) las tuneará al servidor relay a través de internet.
+
+```
+sdmc:/
+├── atmosphere/
+│   └── contents/
+│       ├── 42000000000000B1/         ← switch-lan-play (relay a internet)
+│       │   ├── exefs/main
+│       │   ├── exefs/main.npdm
+│       │   └── flags/boot2.flag
+│       └── 4200000000000010/         ← ldn_mitm (intercepta ldn:u)
+│           ├── exefs.nsp
+│           ├── toolbox.json
+│           └── flags/boot2.flag
+└── switch/
+    ├── lanplay-setup/
+    │   └── lanplay-setup.nro         ← configurador de relay
+    ├── ldnmitm_config/
+    │   └── ldnmitm_config.nro        ← configurador de ldn_mitm
+    └── .overlays/
+        └── ldnmitm_config.ovl        ← overlay Tesla para ldn_mitm
+```
+
+### Flujo de paquetes con ambos sysmodules activos
+
+```
+Juego (modo Inalámbrico Local)
+    │
+    ▼ llamada a ldn:u
+[ldn_mitm] ─intercept─► convierte LDN a paquetes UDP en 10.13.x.x:11452
+    │
+    ▼ paquetes IP en subred 10.13.0.0/16
+[switch-lan-play sysmodule] ─raw socket─► relay server (internet)
+    │
+    ▼ relay server
+Otras consolas de los jugadores (misma cadena en sentido inverso)
+```
 
 ---
 
@@ -276,7 +312,28 @@ make
 
 ---
 
-### Compilar el sysmodule Switch
+### Compilación unificada (recomendado)
+
+Compila y empaqueta **ambos sysmodules + la app** de una sola vez:
+
+```sh
+# 1. Inicializar todos los submodules (ldn_mitm incluye Atmosphere-libs)
+git submodule update --init --recursive
+
+# 2. Instalar devkitPro con soporte Switch
+dkp-pacman -S switch-dev switch-atmo-tools
+
+# 3. Compilar todo
+make all
+
+# 4. Ensamblar el paquete SD card completo en sd/
+make package
+# Resultado: carpeta sd/ → copia su contenido a la raíz de la SD
+```
+
+---
+
+### Compilar el sysmodule Switch (por separado)
 
 Requiere **devkitPro** con soporte para Switch:
 
@@ -288,6 +345,20 @@ dkp-pacman -S switch-dev switch-atmo-tools
 cd sysmodule
 make atmosphere
 # Resultado: carpeta atmosphere/ → copia a la raíz de la SD
+```
+
+---
+
+### Compilar ldn_mitm (por separado)
+
+```sh
+# Inicializar el submodule con sus propias dependencias
+git submodule update --init --recursive ldn_mitm
+
+# Compilar
+make ldn_mitm
+# O directamente:
+cd ldn_mitm && make
 ```
 
 ---
