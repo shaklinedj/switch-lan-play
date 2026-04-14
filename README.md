@@ -117,7 +117,7 @@ Tu nueva versión instalada del Lan Play intercepta automáticamente juegos que 
 
 1. Copia el contenido de la carpeta `sd/` a la raíz de tu MicroSD.
 2. Reinicia tu Switch.
-3. Ahora, cuando entres al "Modo Local" de CUALQUIER juego inalámbrico, `ldn_mitm` (Title ID `4200000000000010`) convertirá las señales locales a señales LAN, y el sysmodule `switch-lan-play` (Title ID `42000000000000B1`) las tuneará al servidor relay a través de internet.
+3. Ahora, cuando entres al "Modo Local" de CUALQUIER juego inalámbrico, `ldn_mitm` (Title ID `4200000000000010`) convertirá las señales locales a señales LAN, y el sysmodule `switch-lan-play` (Title ID `42000000000000B1`) las tunelará al servidor relay a través de internet.
 
 ```
 sdmc:/

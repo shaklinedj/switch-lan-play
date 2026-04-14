@@ -8,7 +8,7 @@
 #   ldn_mitm    Build only ldn_mitm (requires ldn_mitm submodule)
 #   hbapp       Build only the LanPlay Setup homebrew configurator NRO
 #   package     After a successful build, assemble everything into sd/
-#   clean       Remove all build artefacts
+#   clean       Remove all build artifacts
 #
 # Notes
 # -----
