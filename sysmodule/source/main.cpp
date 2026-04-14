@@ -83,26 +83,44 @@ static int resolve_server(const char *addr_str, struct sockaddr_in *out)
         return 0;
     }
 
-    /* 2. Fall back to DNS resolution if it's a domain name */
+    /* 2. Fall back to DNS resolution if it's a domain name.
+     *    On the Switch the resolver may not be ready immediately after the
+     *    network interface comes up, so retry a few times before giving up. */
+#define DNS_MAX_RETRIES  5
+#define DNS_RETRY_DELAY  2000000000LL   /* 2 seconds in nanoseconds */
+
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family   = AF_INET;
     hints.ai_socktype = SOCK_DGRAM;
 
-    int gai_err = getaddrinfo(host, NULL, &hints, &res);
-    if (gai_err != 0 || !res) {
-        LLOG(LLOG_ERROR, "main: cannot resolve '%s': %s", host,
+    int gai_err = EAI_AGAIN;
+    for (int attempt = 1; attempt <= DNS_MAX_RETRIES; attempt++) {
+        res = NULL;
+        gai_err = getaddrinfo(host, NULL, &hints, &res);
+        if (gai_err == 0 && res) break;
+        if (res) { freeaddrinfo(res); res = NULL; }
+        LLOG(LLOG_WARNING, "main: DNS attempt %d/%d for '%s' failed: %s",
+             attempt, DNS_MAX_RETRIES, host,
              gai_err ? gai_strerror(gai_err) : "empty result");
-        if (res) freeaddrinfo(res); /* belt-and-suspenders */
+        if (attempt < DNS_MAX_RETRIES)
+            svcSleepThread(DNS_RETRY_DELAY);
+    }
+
+    if (gai_err != 0 || !res) {
+        LLOG(LLOG_ERROR, "main: cannot resolve '%s' after %d attempts: %s",
+             host, DNS_MAX_RETRIES,
+             gai_err ? gai_strerror(gai_err) : "empty result");
+        if (res) freeaddrinfo(res);
         return -1;
     }
 
     memcpy(&out->sin_addr, &((struct sockaddr_in*)res->ai_addr)->sin_addr, sizeof(struct in_addr));
-    freeaddrinfo(res);  /* always freed, even on success */
+    freeaddrinfo(res);
 
     char ip_str[INET_ADDRSTRLEN];
     inet_ntop(AF_INET, &out->sin_addr, ip_str, sizeof(ip_str));
-    LLOG(LLOG_INFO, "main: relay server resolved to %s:%d", ip_str, port);
+    LLOG(LLOG_INFO, "main: relay server '%s' resolved to %s:%d", host, ip_str, port);
     return 0;
 }
 
