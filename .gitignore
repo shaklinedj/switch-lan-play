@@ -11,8 +11,7 @@ memcheck.sh
 valgrind_ignore
 yarn.lock
 
-# Exclude ldn_mitm source (large, use submodule or separate repo)
-ldn_mitm-1.25.1/
+# Exclude original zip (we have the modified source in ldn_mitm-1.25.1/)
 ldn_mitm-master.zip
 
 # Node modules
