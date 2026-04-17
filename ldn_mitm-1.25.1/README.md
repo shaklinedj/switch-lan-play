@@ -1,7 +1,20 @@
-# ldn_mitm
+# ldn_mitm (modificado para switch-lan-play relay)
+
+> **FORK MODIFICADO** — Este es un fork de [spacemeowx2/ldn_mitm v1.25.1](https://github.com/spacemeowx2/ldn_mitm/releases/tag/v1.25.0) con modificaciones para funcionar con el relay de switch-lan-play sin necesidad de PC.
+>
+> **Cambio principal:** En `ldn_mitm/source/lan_discovery.cpp`, el metodo `connect()` redirige conexiones TCP destinadas a IPs virtuales `10.13.x.x` a traves de `127.0.0.1:11453` (TCP proxy del sysmodule lan-play). Esto permite que las conexiones Station→AccessPoint se tunnelen a traves del relay.
+>
+> ```cpp
+> // lan_discovery.cpp - Modificacion:
+> if ((hostIp & 0xFFFF0000u) == 0x0A0D0000u) {  // 10.13.x.x
+>     addr.sin_addr.s_addr = htonl(0x7f000001u); // 127.0.0.1
+>     addr.sin_port = htons(11453);               // TCP proxy del sysmodule
+> }
+> ```
+
+---
 
 A mitm kip modified from fs_mitm.
-
 
 ldn_mitm implements LAN connectivity by replacing the system's ldn service.
 
