@@ -48,7 +48,7 @@ of your SD card** and reboot the Switch.
 sdmc:/
 ├── atmosphere/
 │   └── contents/
-│       └── 42000000000000B1/
+│       └── 4200000000000011/
 │           ├── exefs/
 │           │   ├── main          ← sysmodule NSO
 │           │   └── main.npdm     ← permissions
@@ -146,7 +146,7 @@ password = mysecret
 
 ## Title ID
 
-`42000000000000B1` — specific range for custom networking sysmodules.
+`4200000000000011` — specific range for custom networking sysmodules.
 Change in `Makefile` and `config/main.json` if needed.
 
 ---

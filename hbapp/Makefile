@@ -26,7 +26,7 @@ ROMFS       :=
 
 APP_TITLE   := LanPlay Setup
 APP_AUTHOR  := switch-lan-play
-APP_VERSION := 1.0
+APP_VERSION := 1.6
 
 ICON := icon.jpg
 
@@ -36,7 +36,7 @@ ICON := icon.jpg
 ARCH        := -march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE
 
 CFLAGS      := -g -Wall -O2 -ffunction-sections $(ARCH) $(DEFINES)
-CFLAGS      += $(INCLUDE) -D__SWITCH__
+CFLAGS      += $(INCLUDE) -D__SWITCH__ -Wno-stringop-truncation
 
 CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17
 

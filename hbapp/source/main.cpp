@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <errno.h>
 #include <switch.h>
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -24,6 +25,108 @@
 #define CONFIG_PATH "sdmc:/config/lan-play/config.ini"
 #define MAX_CFG_LINES 64
 #define MAX_LINE 512
+#define RELAYS_PATH "sdmc:/config/lan-play/relays.txt"
+#define MAX_RELAYS  32
+
+/* Relay must be configured as IP:PORT — no DNS resolution needed. */
+
+/* commit_sdmc is defined below; forward-declare so relay list helpers can call it */
+static bool g_sdmc_mounted = false;
+static void commit_sdmc(void);
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/*  Known relay IPs (pre-seed for offline use)                            */
+/* ═══════════════════════════════════════════════════════════════════════ */
+static const char *g_seed_relays[] = {
+    "88.140.156.4:11451",      /* switch.lan-play.com   EU FR */
+    "192.241.238.136:11451",   /* tekn0.net             EU    */
+    "65.21.20.230:11451",      /* lan.nonny.horse       EU    */
+    "45.83.241.140:11451",     /* switch.jayseateam.nl  NL    */
+    "45.83.241.140:11453",     /* switch.jayseateam.nl  NL    */
+    "91.195.240.12:11453",     /* switch.0mn1b0x.com    AU    */
+    "199.60.101.194:11451",    /* joinsg.net            US    */
+    "199.60.101.194:11453",    /* joinsg.net            US    */
+    "89.163.151.130:11451",    /* switch.servegame.com  DK    */
+    "37.187.111.226:11451",    /* spain-slp.duckdns.org FR    */
+    "185.117.82.250:11451",    /* games.initlab.org     BG    */
+    "37.201.39.187:11451",     /* switch-lanyplay-de    DE    */
+    "201.83.170.61:11451",     /* herbertfx.ddns.net    BR    */
+};
+#define SEED_COUNT (int)(sizeof(g_seed_relays)/sizeof(g_seed_relays[0]))
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/*  Relay list helpers                                                    */
+/* ═══════════════════════════════════════════════════════════════════════ */
+typedef struct {
+    char entries[MAX_RELAYS][64];
+    int  count;
+} RelayList;
+
+/* Load relays.txt into rl. If file is missing, seed with known IPs. */
+static void relaylist_load(RelayList *rl)
+{
+    rl->count = 0;
+    FILE *f = fopen(RELAYS_PATH, "r");
+    if (f) {
+        char line[64];
+        while (rl->count < MAX_RELAYS && fgets(line, sizeof(line), f)) {
+            /* strip newline */
+            int len = (int)strlen(line);
+            while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r'))
+                line[--len] = '\0';
+            if (len > 0)
+                strncpy(rl->entries[rl->count++], line, 63);
+        }
+        fclose(f);
+    }
+    /* If empty, seed with known IPs */
+    if (rl->count == 0) {
+        for (int i = 0; i < SEED_COUNT && rl->count < MAX_RELAYS; i++)
+            strncpy(rl->entries[rl->count++], g_seed_relays[i], 63);
+    }
+}
+
+/* Persist the list to relays.txt */
+static void relaylist_save(const RelayList *rl)
+{
+    mkdir("sdmc:/config", 0777);
+    mkdir(CONFIG_DIR, 0777);
+    FILE *f = fopen(RELAYS_PATH, "w");
+    if (!f) return;
+    for (int i = 0; i < rl->count; i++)
+        fprintf(f, "%s\n", rl->entries[i]);
+    fclose(f);
+    commit_sdmc();
+}
+
+/* Add or promote an IP:port entry to the top of the list */
+static void relaylist_add(RelayList *rl, const char *ip_port)
+{
+    /* Remove if already present */
+    for (int i = 0; i < rl->count; i++) {
+        if (strcmp(rl->entries[i], ip_port) == 0) {
+            /* Move to top */
+            memmove(rl->entries[1], rl->entries[0], i * sizeof(rl->entries[0]));
+            strncpy(rl->entries[0], ip_port, 63);
+            relaylist_save(rl);
+            return;
+        }
+    }
+    /* Not present: insert at top, evict oldest if full */
+    int keep = rl->count < MAX_RELAYS ? rl->count : MAX_RELAYS - 1;
+    memmove(rl->entries[1], rl->entries[0], keep * sizeof(rl->entries[0]));
+    strncpy(rl->entries[0], ip_port, 63);
+    rl->count = keep + 1;
+    relaylist_save(rl);
+}
+
+/* commit_sdmc — actual definition (g_sdmc_mounted declared above) */
+static void commit_sdmc(void)
+{
+    if (g_sdmc_mounted) {
+        fsdevCommitDevice("sdmc");
+    }
+}
 
 #define KEY_BS  '\x08'
 #define KEY_OK  '\x0D'
@@ -52,6 +155,7 @@
 #define C_TITLE_BG RGBA8_MAXALPHA(0,  100, 180)
 #define C_GREEN_T  RGBA8_MAXALPHA(80,  220, 100)
 #define C_RED_T    RGBA8_MAXALPHA(220, 80,  80)
+#define C_YELLOW   RGBA8_MAXALPHA(255, 230, 0)
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 /*  Embedded 8×8 bitmap font (printable ASCII 32-126, public domain)      */
@@ -254,67 +358,59 @@ static Key g_keys[MAX_KEYS];
 static int g_nkeys;
 static int g_sel;      /* selected key index (pad cursor) */
 
-/* Grid params for char rows (rows 0-3) */
+/* Grid params — IP-only keyboard (digits + . + :) */
 #define KBD_MARGIN  60
 #define KBD_GAP     8
-#define KBD_VGAP    8
+#define KBD_VGAP    10
 #define KBD_COLS    10
-#define KBD_TOP     160
-#define KBD_KEY_H   88
+#define KBD_TOP     230
+#define KBD_KEY_H   130
 
 static int KBD_KEY_W; /* computed at init */
 
-static const char ROWS[4][11] = {
-    "1234567890",
-    "qwertyuiop",
-    "asdfghjkl.",
-    "zxcvbnm:-/",
-};
+static const char ROW_DIGITS[11] = "1234567890";
 
 static void kbd_init(void)
 {
     g_nkeys = 0;
     KBD_KEY_W = (FB_W - 2 * KBD_MARGIN - (KBD_COLS - 1) * KBD_GAP) / KBD_COLS;
 
-    /* Rows 0-3: regular character keys */
-    for (int r = 0; r < 4; r++) {
-        int rowY = KBD_TOP + r * (KBD_KEY_H + KBD_VGAP);
-        for (int c = 0; c < KBD_COLS; c++) {
-            Key *k = &g_keys[g_nkeys++];
-            k->x   = KBD_MARGIN + c * (KBD_KEY_W + KBD_GAP);
-            k->y   = rowY;
-            k->w   = KBD_KEY_W;
-            k->h   = KBD_KEY_H;
-            k->val = ROWS[r][c];
-            k->label[0] = ROWS[r][c]; k->label[1] = '\0';
-            k->face = C_KEY; k->hi = C_KEY_HI; k->lo = C_KEY_LO;
-        }
+    /* Row 0: digit keys 1-0 */
+    int r0y = KBD_TOP;
+    for (int c = 0; c < KBD_COLS; c++) {
+        Key *k = &g_keys[g_nkeys++];
+        k->x   = KBD_MARGIN + c * (KBD_KEY_W + KBD_GAP);
+        k->y   = r0y;
+        k->w   = KBD_KEY_W;
+        k->h   = KBD_KEY_H;
+        k->val = ROW_DIGITS[c];
+        k->label[0] = ROW_DIGITS[c]; k->label[1] = '\0';
+        k->face = C_KEY; k->hi = C_KEY_HI; k->lo = C_KEY_LO;
     }
 
-    /* Row 4: special keys — @  _  [SPACE]  [DEL]  [DONE] */
-    int r4y = KBD_TOP + 4 * (KBD_KEY_H + KBD_VGAP);
+    /* Row 1: [.] [:] [DEL] [DONE] */
+    int r1y = KBD_TOP + 1 * (KBD_KEY_H + KBD_VGAP);
     int total_w = FB_W - 2 * KBD_MARGIN;
-    /* Widths: @ and _ are 1 unit, SPC=4, DEL=2, DONE=2; total=10 units */
-    int unit = (total_w - 4 * KBD_GAP) / 10; /* ≈ same as KBD_KEY_W */
+    int unit = KBD_KEY_W;
     int cx = KBD_MARGIN;
 
-    /* @ */
-    { Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r4y; k->w=unit; k->h=KBD_KEY_H;
-      k->val='@'; strcpy(k->label,"@"); k->face=C_KEY; k->hi=C_KEY_HI; k->lo=C_KEY_LO; cx+=unit+KBD_GAP; }
-    /* _ */
-    { Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r4y; k->w=unit; k->h=KBD_KEY_H;
-      k->val='_'; strcpy(k->label,"_"); k->face=C_KEY; k->hi=C_KEY_HI; k->lo=C_KEY_LO; cx+=unit+KBD_GAP; }
-    /* SPACE (4 units) */
-    { int sw=unit*4+KBD_GAP*3; Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r4y; k->w=sw; k->h=KBD_KEY_H;
-      k->val=' '; strcpy(k->label,"SPACE"); k->face=C_SPC; k->hi=C_KEY_HI; k->lo=C_KEY_LO; cx+=sw+KBD_GAP; }
-    /* DEL (1.5 units) */
-    { int dw=unit*2-KBD_GAP/2; Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r4y; k->w=dw; k->h=KBD_KEY_H;
-      k->val=KEY_BS; strcpy(k->label,"DEL"); k->face=C_DEL; k->hi=C_DEL_HI; k->lo=C_DEL_LO; cx+=dw+KBD_GAP; }
+    /* . (2 units) */
+    { Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r1y; k->w=unit*2+KBD_GAP; k->h=KBD_KEY_H;
+      k->val='.'; strcpy(k->label,"."); k->face=C_KEY; k->hi=C_KEY_HI; k->lo=C_KEY_LO;
+      cx+=unit*2+KBD_GAP*2; }
+    /* : (2 units) */
+    { Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r1y; k->w=unit*2+KBD_GAP; k->h=KBD_KEY_H;
+      k->val=':'; strcpy(k->label,":"); k->face=C_KEY; k->hi=C_KEY_HI; k->lo=C_KEY_LO;
+      cx+=unit*2+KBD_GAP*2; }
+    /* DEL (3 units) */
+    { int dw=unit*3+KBD_GAP*2; Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r1y; k->w=dw; k->h=KBD_KEY_H;
+      k->val=KEY_BS; strcpy(k->label,"DEL"); k->face=C_DEL; k->hi=C_DEL_HI; k->lo=C_DEL_LO;
+      cx+=dw+KBD_GAP; }
     /* DONE (remaining) */
-    { int ow=KBD_MARGIN+total_w-cx; Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r4y; k->w=ow; k->h=KBD_KEY_H;
+    { int ow=KBD_MARGIN+total_w-cx; Key *k=&g_keys[g_nkeys++]; k->x=cx; k->y=r1y; k->w=ow; k->h=KBD_KEY_H;
       k->val=KEY_OK; strcpy(k->label,"DONE"); k->face=C_DONE; k->hi=C_DONE_HI; k->lo=C_DONE_LO; }
 
-    g_sel = KBD_COLS; /* start on 'q' row */
+    g_sel = 0; /* start on digit '1' */
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -351,7 +447,8 @@ static void kbd_draw(const char *buf, int len, int tap_idx)
     /* Char count */
     char cnt[16]; snprintf(cnt, sizeof(cnt), "%d", len);
     draw_text(FB_W - KBD_MARGIN - text_w(cnt, 2) - 10, fy + 28, cnt, C_TXT_DIM, 2);
-
+    /* Format hint */
+    draw_text_c(fy + fh + 10, "Solo IP:PUERTO  (ej: 192.241.238.136:11451)", C_YELLOW, 2);
     /* ── Keys ───────────────────────────────────────────────────── */
     for (int i = 0; i < g_nkeys; i++) {
         Key *k = &g_keys[i];
@@ -375,7 +472,7 @@ static void kbd_draw(const char *buf, int len, int tap_idx)
     }
 
     /* ── Footer hints ───────────────────────────────────────────── */
-    draw_text_c(FB_H - 30, "Touch keys  |  D-Pad + A  |  B: del  |  +: confirm  |  -: cancel", C_TXT_DIM, 2);
+    draw_text_c(FB_H - 30, "IP:PUERTO  (ej: 192.241.238.136:11451)  |  Toca / D-Pad+A  |  +: Guardar  |  -: Cancelar", C_TXT_DIM, 2);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -432,10 +529,69 @@ static void trim(char *s)
     while (l>0&&(s[l-1]==' '||s[l-1]=='\t'||s[l-1]=='\r'||s[l-1]=='\n')) s[--l]='\0';
 }
 
+static bool is_ipv4_literal(const char *host)
+{
+    unsigned a, b, c, d;
+    char tail;
+    return sscanf(host, "%u.%u.%u.%u%c", &a, &b, &c, &d, &tail) == 4 &&
+           a <= 255 && b <= 255 && c <= 255 && d <= 255;
+}
+
+static void extract_host_port(const char *addr, char *host, size_t host_sz, int *port)
+{
+    const char *colon;
+    size_t host_len;
+
+    host[0] = '\0';
+    *port = 11451;
+    if (!addr || !addr[0]) return;
+
+    colon = strrchr(addr, ':');
+    if (colon && strchr(colon + 1, ':') == NULL) {
+        host_len = (size_t)(colon - addr);
+        if (host_len >= host_sz) host_len = host_sz - 1;
+        memcpy(host, addr, host_len);
+        host[host_len] = '\0';
+        *port = atoi(colon + 1);
+        if (*port <= 0) *port = 11451;
+    } else {
+        strncpy(host, addr, host_sz - 1);
+        host[host_sz - 1] = '\0';
+    }
+}
+
+static bool normalize_relay_for_save(const char *addr, char *out, size_t out_sz)
+{
+    char host[128];
+    int port;
+
+    extract_host_port(addr, host, sizeof(host), &port);
+    if (!host[0]) {
+        out[0] = '\0';
+        return false;
+    }
+
+    /* Only accept direct IPv4 — no DNS needed */
+    if (!is_ipv4_literal(host)) {
+        out[0] = '\0';
+        return false;
+    }
+
+    if (port <= 0 || port > 65535) port = 11451;
+    snprintf(out, out_sz, "%s:%d", host, port);
+    return true;
+}
+
 static int read_relay(char *buf, size_t sz)
 {
     buf[0]='\0';
-    FILE *f=fopen(CONFIG_PATH,"r"); if(!f)return-1;
+    commit_sdmc(); /* Sync with hardware when SD is mounted */
+    FILE *f=fopen(CONFIG_PATH,"r"); 
+    if(!f) {
+        /* If we can't open config, ensure buf is empty strings */
+        memset(buf, 0, sz);
+        return -1;
+    }
     char line[512];
     while(fgets(line,sizeof(line),f)){
         trim(line);
@@ -447,28 +603,54 @@ static int read_relay(char *buf, size_t sz)
             memcpy(buf,v,n); buf[n]='\0'; fclose(f); return 0;
         }
     }
-    fclose(f); return-1;
+    fclose(f); 
+    memset(buf, 0, sz); /* Clear if key not found */
+    return-1;
 }
 
 static int save_relay(const char *addr)
 {
-    mkdir(CONFIG_DIR,0777);
+    char normalized[128];
+
+    /* Ensure folders exist */
+    mkdir("sdmc:/config", 0777);
+    mkdir(CONFIG_DIR, 0777);
+
+    if (!normalize_relay_for_save(addr, normalized, sizeof(normalized)) || !normalized[0]) {
+        errno = EINVAL; /* Not a valid IP:port */
+        return -1;
+    }
+
+    /* Auto-add to the persistent relay list */
+    {
+        RelayList rl;
+        relaylist_load(&rl);
+        relaylist_add(&rl, normalized);
+    }
+
     char lines[MAX_CFG_LINES][MAX_LINE]; int n=0; bool found=false;
     FILE *r=fopen(CONFIG_PATH,"r");
     if(r){ while(n<MAX_CFG_LINES-1&&fgets(lines[n],MAX_LINE,r))n++; fclose(r); }
+    
     for(int i=0;i<n;i++){
         char t[MAX_LINE]; memcpy(t,lines[i],MAX_LINE-1); t[MAX_LINE-1]='\0'; trim(t);
         if(strncmp(t,"relay_addr",10)==0&&strchr(t,'=')){
-            snprintf(lines[i],MAX_LINE,"relay_addr = %s\n",addr); found=true; break;
+            snprintf(lines[i],MAX_LINE,"relay_addr = %s\n",normalized); found=true; break;
         }
     }
     if(!found){
         if(!n){ snprintf(lines[n++],MAX_LINE,"; switch-lan-play\n"); snprintf(lines[n++],MAX_LINE,"[server]\n"); }
-        if(n<MAX_CFG_LINES-1) snprintf(lines[n++],MAX_LINE,"relay_addr = %s\n",addr);
+        if(n<MAX_CFG_LINES-1) snprintf(lines[n++],MAX_LINE,"relay_addr = %s\n",normalized);
     }
-    FILE *w=fopen(CONFIG_PATH,"w"); if(!w)return-1;
-    for(int i=0;i<n;i++)fputs(lines[i],w);
-    fclose(w); return 0;
+    
+    FILE *w=fopen(CONFIG_PATH,"w");
+    if(!w) return -1;
+    for(int i=0;i<n;i++) fputs(lines[i],w);
+    fclose(w);
+    
+    /* Flush SD cache */
+    commit_sdmc();
+    return 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
@@ -600,13 +782,19 @@ static void trigger_reload(void)
 {
     mkdir("sdmc:/tmp", 0777);
     FILE *f = fopen("sdmc:/tmp/lanplay.reload", "w");
-    if (f) { fprintf(f, "1"); fclose(f); }
+    if (f) { 
+        fprintf(f, "1"); 
+        fclose(f);
+        /* Force SD card commit so sysmodule detects it immediately */
+        commit_sdmc();
+    }
 }
 
 /* ═══════════════════════════════════════════════════════════════════════ */
 /*  Main menu screen                                                      */
 /* ═══════════════════════════════════════════════════════════════════════ */
-static bool menu_screen(const char *current)
+/* Return values: 0=exit  1=lista  2=nueva IP */
+static int menu_screen(const char *current)
 {
     SysStatus status;
     u64 last_update = 0;
@@ -627,7 +815,7 @@ static bool menu_screen(const char *current)
         draw_text_c(12, "LAN Play Setup", C_TXT, 3);
 
         /* Config Status */
-        draw_text(100, 80, "Configured Relay:", C_TXT_DIM, 2);
+        draw_text(100, 80, "Relay Target (on SD):", C_TXT_DIM, 2);
         draw_text(100, 110, (current && current[0]) ? current : "None", 
                   (current && current[0]) ? C_GREEN_T : C_RED_T, 3);
 
@@ -636,13 +824,16 @@ static bool menu_screen(const char *current)
         draw_outline(FB_W - 450, 80, 350, 150, C_FIELD_BD, 2);
         draw_text(FB_W - 440, 90, "Background Service:", C_TXT_DIM, 2);
         if (status.active) {
-            draw_text(FB_W - 440, 120, "Connected to:", C_TXT_DIM, 2);
+            draw_text(FB_W - 440, 120, "Active Server:", C_TXT_DIM, 2);
             draw_text(FB_W - 440, 150, status.relay, C_GREEN_T, 2);
             char up[64], dn[64];
             snprintf(up, 64, "Sent: %llu KB", (unsigned long long)(status.up_b / 1024));
             snprintf(dn, 64, "Recv: %llu KB", (unsigned long long)(status.dn_b / 1024));
             draw_text(FB_W - 440, 185, up, C_TXT, 2);
             draw_text(FB_W - 440, 210, dn, C_TXT, 2);
+        } else if (strstr(status.error_msg, "WiFi")) {
+            draw_text(FB_W - 440, 130, "Waiting for WiFi...", C_YELLOW, 3);
+            draw_text(FB_W - 440, 180, "Auto-connecting soon", C_TXT_DIM, 2);
         } else {
             draw_text(FB_W - 440, 130, "NOT RUNNING", C_RED_T, 3);
             if (status.error_msg[0]) {
@@ -652,39 +843,214 @@ static bool menu_screen(const char *current)
             }
         }
 
-        /* Buttons */
-        int bw=350, bh=80, gap=50;
-        int bx=(FB_W-bw*2-gap)/2; /* Only 2 buttons now: Configure and Exit */
+        /* Buttons — 3 now: Lista, Configure, Exit */
+        int bw=280, bh=80, gap=30;
+        int bx=(FB_W-bw*3-gap*2)/2;
 
-        /* A: Configure */
-        draw_btn(bx, 340, bw, bh, C_DONE, C_DONE_HI, C_DONE_LO);
-        draw_text(bx+(bw-text_w("A: Configure",3))/2, 340+(bh-24)/2, "A: Configure", C_TXT, 3);
+        /* A: Lista */
+        draw_btn(bx, 340, bw, bh, C_KEY, C_KEY_HI, C_KEY_LO);
+        draw_text(bx+(bw-text_w("A: Lista",3))/2, 340+(bh-24)/2, "A: Lista", C_TXT, 3);
+
+        /* X: Nueva IP */
+        draw_btn(bx+bw+gap, 340, bw, bh, C_DONE, C_DONE_HI, C_DONE_LO);
+        draw_text(bx+bw+gap+(bw-text_w("X: Nueva IP",3))/2, 340+(bh-24)/2, "X: Nueva IP", C_TXT, 3);
 
         /* B: Exit */
-        draw_btn(bx+bw+gap, 340, bw, bh, C_DEL, C_DEL_HI, C_DEL_LO);
-        draw_text(bx+bw+gap+(bw-text_w("B: Exit",3))/2, 340+(bh-24)/2, "B: Exit", C_TXT, 3);
+        draw_btn(bx+2*(bw+gap), 340, bw, bh, C_DEL, C_DEL_HI, C_DEL_LO);
+        draw_text(bx+2*(bw+gap)+(bw-text_w("B: Salir",3))/2, 340+(bh-24)/2, "B: Salir", C_TXT, 3);
 
         /* Hint */
-        draw_text_c(450, "The sysmodule background service restarts automatically when you configure it.", C_TXT_DIM, 2);
-        draw_text_c(550, "Selection: D-Pad   Confirm: A/B/X buttons", C_TXT_DIM, 2);
+        draw_text_c(460, "IP:PUERTO  (ej: 192.241.238.136:11451)", C_YELLOW, 2);
+        draw_text_c(498, "IP directa = sin DNS, sin 90DNS, sin esperas.", C_TXT_DIM, 2);
+        draw_text_c(550, "D-Pad + A  |  Toque la pantalla", C_TXT_DIM, 2);
 
         framebufferEnd(&g_fb);
 
         padUpdate(&g_pad);
         u64 dn=padGetButtonsDown(&g_pad);
-        if(dn&HidNpadButton_A) return true;
-        if(dn&HidNpadButton_B) return false;
-        if(dn&HidNpadButton_Plus) return false;
+        if(dn&HidNpadButton_A) return 1;   /* lista */
+        if(dn&HidNpadButton_X) return 2;   /* nueva ip */
+        if(dn&(HidNpadButton_B|HidNpadButton_Plus)) return 0;  /* salir */
 
         /* Touch */
         { HidTouchScreenState ts={0};
           if(hidGetTouchScreenStates(&ts,1)&&ts.count>0){
               int tx=ts.touches[0].x, ty=ts.touches[0].y;
               if(ty>=340&&ty<420){
-                  if(tx>=bx&&tx<bx+bw) return true;
-                  if(tx>=bx+bw+gap&&tx<bx+bw*2+gap) return false;
+                  if(tx>=bx&&tx<bx+bw) return 1;
+                  if(tx>=bx+bw+gap&&tx<bx+2*bw+gap) return 2;
+                  if(tx>=bx+2*(bw+gap)&&tx<bx+3*bw+2*gap) return 0;
               }
           }
+        }
+
+        svcSleepThread(16000000LL);
+    }
+    return false;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════ */
+/*  List selection screen                                                  */
+/*                                                                         */
+/*  Returns: true  + out filled  → user selected an IP                    */
+/*           false              → user pressed “Nueva IP” or “Cancelar”    */
+/*           If out[0]==0 the caller should open the keyboard              */
+/* ═══════════════════════════════════════════════════════════════════════ */
+
+#define LIST_ITEM_H   68
+#define LIST_TOP      110
+#define LIST_LEFT     80
+#define LIST_W        (FB_W - 160)
+#define LIST_VISIBLE  7   /* max rows visible at once */
+
+/* Returns: true = selected, out has IP; false = want keyboard or cancel
+   If want_keyboard is set, caller should open keyboard. */
+static bool list_screen(RelayList *rl, const char *current,
+                        char *out, size_t outsz, bool *want_keyboard)
+{
+    *want_keyboard = false;
+    out[0] = '\0';
+
+    int sel    = 0;  /* currently highlighted row */
+    int scroll = 0;  /* first visible row          */
+
+    /* Pre-select the current relay if it's in the list */
+    if (current && current[0]) {
+        for (int i = 0; i < rl->count; i++) {
+            if (strcmp(rl->entries[i], current) == 0) { sel = i; break; }
+        }
+    }
+
+    while (appletMainLoop()) {
+        /* ── Clamp scroll ── */
+        if (sel < scroll) scroll = sel;
+        if (sel >= scroll + LIST_VISIBLE) scroll = sel - LIST_VISIBLE + 1;
+        if (scroll < 0) scroll = 0;
+
+        /* ── Draw ── */
+        g_buf = (u32*)framebufferBegin(&g_fb, &g_stride);
+        fill_screen(C_BG);
+
+        /* Title */
+        fill_rect(0, 0, FB_W, 52, C_TITLE_BG);
+        draw_text_c(12, "LAN Play — Seleccionar Relay", C_TXT, 3);
+
+        /* Column header */
+        draw_text(LIST_LEFT, 62, "IP : Puerto", C_TXT_DIM, 2);
+        draw_text(FB_W - LIST_LEFT - text_w("actual", 2), 62,
+                  "actual", C_TXT_DIM, 2);
+        fill_rect(LIST_LEFT, 86, LIST_W, 2, C_FIELD_BD);
+
+        /* Rows */
+        for (int vi = 0; vi < LIST_VISIBLE; vi++) {
+            int idx = scroll + vi;
+            if (idx >= rl->count) break;
+
+            int ry = LIST_TOP + vi * (LIST_ITEM_H + 4);
+            bool is_sel = (idx == sel);
+            bool is_cur = (current && strcmp(rl->entries[idx], current) == 0);
+
+            u32 bg = is_sel ? C_FIELD_BD
+                   : (idx % 2 == 0 ? RGBA8_MAXALPHA(50,50,58) : C_FIELD_BG);
+            fill_rect(LIST_LEFT, ry, LIST_W, LIST_ITEM_H, bg);
+
+            if (is_sel)
+                draw_outline(LIST_LEFT, ry, LIST_W, LIST_ITEM_H,
+                             RGBA8_MAXALPHA(0, 220, 255), 2);
+
+            u32 tc = is_sel ? RGBA8_MAXALPHA(0,0,0) : C_TXT;
+            draw_text(LIST_LEFT + 16, ry + (LIST_ITEM_H - 24)/2,
+                      rl->entries[idx], tc, 3);
+
+            if (is_cur) {
+                const char *tag = "[activo]";
+                int tw = text_w(tag, 2);
+                draw_text(LIST_LEFT + LIST_W - tw - 12,
+                          ry + (LIST_ITEM_H - 16)/2, tag, C_GREEN_T, 2);
+            }
+        }
+
+        /* Scroll indicators */
+        if (scroll > 0)
+            draw_text_c(LIST_TOP - 20, "\x18  subir", C_TXT_DIM, 2);
+        if (scroll + LIST_VISIBLE < rl->count)
+            draw_text_c(LIST_TOP + LIST_VISIBLE * (LIST_ITEM_H + 4) + 4,
+                        "\x19  bajar", C_TXT_DIM, 2);
+
+        /* Bottom buttons */
+        int bot = FB_H - 90;
+        int bw = 280, bh = 60, gap = 30;
+        int bx = (FB_W - bw * 3 - gap * 2) / 2;
+        draw_btn(bx,          bot, bw, bh, C_DONE,  C_DONE_HI,  C_DONE_LO);
+        draw_text(bx          + (bw - text_w("A: Usar",3))/2,
+                  bot + (bh-24)/2, "A: Usar", C_TXT, 3);
+        draw_btn(bx + bw+gap, bot, bw, bh, C_KEY,   C_KEY_HI,   C_KEY_LO);
+        draw_text(bx+bw+gap   + (bw - text_w("Y: Nueva IP",3))/2,
+                  bot + (bh-24)/2, "Y: Nueva IP", C_TXT, 3);
+        draw_btn(bx+2*(bw+gap), bot, bw, bh, C_DEL, C_DEL_HI,   C_DEL_LO);
+        draw_text(bx+2*(bw+gap) + (bw - text_w("B: Volver",3))/2,
+                  bot + (bh-24)/2, "B: Volver", C_TXT, 3);
+
+        framebufferEnd(&g_fb);
+
+        /* ── Input ── */
+        padUpdate(&g_pad);
+        u64 down = padGetButtonsDown(&g_pad);
+
+        if (down & HidNpadButton_Down)  { if (sel < rl->count - 1) sel++; }
+        if (down & HidNpadButton_Up)    { if (sel > 0) sel--; }
+        if (down & (HidNpadButton_A | HidNpadButton_Plus)) {
+            if (rl->count > 0) {
+                strncpy(out, rl->entries[sel], outsz - 1);
+                out[outsz-1] = '\0';
+                return true;
+            }
+        }
+        if (down & HidNpadButton_Y) {
+            *want_keyboard = true;
+            return false;
+        }
+        if (down & (HidNpadButton_B | HidNpadButton_Minus)) {
+            return false;
+        }
+
+        /* Touch: tap a row */
+        HidTouchScreenState ts = {0};
+        if (hidGetTouchScreenStates(&ts, 1) && ts.count > 0) {
+            int tx = ts.touches[0].x, ty = ts.touches[0].y;
+            /* Row tap */
+            for (int vi = 0; vi < LIST_VISIBLE; vi++) {
+                int idx = scroll + vi;
+                if (idx >= rl->count) break;
+                int ry = LIST_TOP + vi * (LIST_ITEM_H + 4);
+                if (tx >= LIST_LEFT && tx < LIST_LEFT + LIST_W &&
+                    ty >= ry && ty < ry + LIST_ITEM_H) {
+                    if (idx == sel) {
+                        /* Double-tap or second tap = confirm */
+                        strncpy(out, rl->entries[sel], outsz - 1);
+                        out[outsz-1] = '\0';
+                        return true;
+                    }
+                    sel = idx; /* single tap = highlight */
+                }
+            }
+            /* Bottom buttons */
+            if (ty >= bot && ty < bot + bh) {
+                if (tx >= bx && tx < bx + bw) {
+                    if (rl->count > 0) {
+                        strncpy(out, rl->entries[sel], outsz - 1);
+                        out[outsz-1] = '\0';
+                        return true;
+                    }
+                }
+                if (tx >= bx+bw+gap && tx < bx+2*bw+gap) {
+                    *want_keyboard = true;
+                    return false;
+                }
+                if (tx >= bx+2*(bw+gap) && tx < bx+3*bw+2*gap) {
+                    return false;
+                }
+            }
         }
 
         svcSleepThread(16000000LL);
@@ -697,6 +1063,14 @@ static bool menu_screen(const char *current)
 /* ═══════════════════════════════════════════════════════════════════════ */
 static void result_screen(const char *addr, bool ok)
 {
+    char err_txt[128]={0};
+    if (!ok) {
+        if (errno == EINVAL)
+            snprintf(err_txt, sizeof(err_txt), "Formato invalido — solo se acepta IP:PUERTO");
+        else
+            snprintf(err_txt, sizeof(err_txt), "Error: %s (Codigo %d)", strerror(errno), errno);
+    }
+    
     while(appletMainLoop()){
         g_buf=(u32*)framebufferBegin(&g_fb,&g_stride);
         fill_screen(C_BG);
@@ -706,16 +1080,15 @@ static void result_screen(const char *addr, bool ok)
         if(ok){
             draw_text_c(140, "Saved successfully!", C_GREEN_T, 4);
             draw_text_c(210, addr, C_TXT, 3);
-            draw_text_c(300, "Next steps:", C_TXT_DIM, 3);
-            draw_text_c(340, "1. Press HOME to return", C_TXT_DIM, 2);
-            draw_text_c(370, "2. Restart the Switch (POWER > Restart)", C_TXT_DIM, 2);
-            draw_text_c(400, "3. The sysmodule connects automatically", C_TXT_DIM, 2);
+            draw_text_c(300, "The sysmodule will reload automatically.", C_TXT_DIM, 3);
+            draw_text_c(340, "Status in main menu should update in seconds.", C_TXT_DIM, 2);
         } else {
             draw_text_c(200, "Failed to write config!", C_RED_T, 4);
-            draw_text_c(280, "Check that the SD card is writable.", C_TXT_DIM, 3);
+            draw_text_c(280, err_txt, C_TXT_DIM, 3);
+            draw_text_c(330, "Formato: 192.241.238.136:11451", C_YELLOW, 2);
         }
 
-        draw_text_c(550, "Press any button to exit", C_TXT_DIM, 3);
+        draw_text_c(550, "Press any button to return", C_TXT_DIM, 3);
         framebufferEnd(&g_fb);
 
         padUpdate(&g_pad);
@@ -736,7 +1109,10 @@ int main(int argc, char *argv[])
     (void)argc; (void)argv;
 
     /* Mount SD card for config file I/O */
-    fsdevMountSdmc();
+    g_sdmc_mounted = R_SUCCEEDED(fsdevMountSdmc());
+
+    /* Initialize Network (required for DNS resolution in libnx/bsd) */
+    socketInitializeDefault();
 
     /* Create linear double-buffered framebuffer (NO consoleInit!) */
     NWindow *win = nwindowGetDefault();
@@ -749,27 +1125,51 @@ int main(int argc, char *argv[])
     hidInitializeTouchScreen();
 
     while (appletMainLoop()) {
-        /* Read current config */
+        /* Read current config and relay list */
         char current[STR_MAX]={0};
+        commit_sdmc();
         read_relay(current, sizeof(current));
 
-        /* Main menu */
-        if (!menu_screen(current)) break;
+        RelayList rl;
+        relaylist_load(&rl);
 
-        /* Keyboard */
-        char relay[STR_MAX]={0};
-        if (keyboard_screen(current, relay, sizeof(relay))) {
-            bool ok = (save_relay(relay) == 0);
-            if (ok) {
-                trigger_reload();
-                /* Go directly back to menu to see updated status */
-            } else {
-                result_screen(relay, ok);
+        /* Main menu: 0=exit  1=lista  2=nueva IP */
+        int action = menu_screen(current);
+        if (action == 0) break;
+
+        if (action == 1) {
+            /* Show list screen */
+            char relay[STR_MAX]={0};
+            bool want_kbd = false;
+            bool picked   = list_screen(&rl, current, relay, sizeof(relay), &want_kbd);
+
+            if (picked) {
+                /* User selected an existing IP from the list */
+                bool ok = (save_relay(relay) == 0);
+                if (ok) trigger_reload();
+                else    result_screen(relay, ok);
+            } else if (want_kbd) {
+                /* User pressed "Nueva IP" from list screen */
+                char new_relay[STR_MAX]={0};
+                if (keyboard_screen(relay[0] ? relay : current, new_relay, sizeof(new_relay))) {
+                    bool ok = (save_relay(new_relay) == 0);
+                    if (ok) trigger_reload();
+                    else    result_screen(new_relay, ok);
+                }
+            }
+        } else {
+            /* action == 2: jump straight to keyboard */
+            char relay[STR_MAX]={0};
+            if (keyboard_screen(current, relay, sizeof(relay))) {
+                bool ok = (save_relay(relay) == 0);
+                if (ok) trigger_reload();
+                else    result_screen(relay, ok);
             }
         }
     }
 
     framebufferClose(&g_fb);
+    socketExit();
     fsdevUnmountAll();
     return 0;
 }

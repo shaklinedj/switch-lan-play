@@ -312,10 +312,11 @@ struct lan_play {
     char         *username;
     unsigned char key[LP_KEY_LEN];
 
-    /* TAP (raw socket capturing/injecting IP packets) */
-    int     raw_fd;
-    uint8_t my_ip[4];    /* assigned IP in 10.13.0.0/16 */
-    uint8_t my_mac[6];   /* fake Ethernet MAC */
+    /* TAP (Universal BPF capture) */
+    int      bpf_fd;
+    uint32_t wifi_ip;    /* actual Switch WiFi IP (network byte order) — used to filter self-echo */
+    uint8_t  my_ip[4];   /* assigned IP in 10.13.0.0/16 */
+    uint8_t  my_mac[6];  /* fake Ethernet MAC */
 
     /* Stats */
     uint64_t upload_byte;
@@ -326,6 +327,8 @@ struct lan_play {
     /* Threading */
     Thread         relay_thread;
     Thread         tap_thread;
+    Thread         ldn_udp_thread;
+    Thread         ldn_tcp_thread;
     Mutex          mutex;
     volatile bool  running;
 };

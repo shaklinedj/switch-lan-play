@@ -10,3 +10,16 @@ debug.sh
 memcheck.sh
 valgrind_ignore
 yarn.lock
+
+# Exclude ldn_mitm source (large, use submodule or separate repo)
+ldn_mitm-1.25.1/
+ldn_mitm-master.zip
+
+# Node modules
+node_modules/
+server/node_modules/
+
+# Build artifacts
+*.elf
+*.lst
+*.d

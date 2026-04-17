@@ -67,7 +67,7 @@ y reinicia la Switch.
 sdmc:/
 ├── atmosphere/
 │   └── contents/
-│       └── 42000000000000B1/
+│       └── 4200000000000011/
 │           ├── exefs/
 │           │   ├── main           ← sysmodule NSO
 │           │   └── main.npdm      ← permisos

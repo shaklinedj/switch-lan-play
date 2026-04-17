@@ -42,7 +42,12 @@ static int relay_send_raw(struct lan_play *lp, const void *data, size_t len)
                           (struct sockaddr *)&lp->server_addr,
                           sizeof(lp->server_addr));
     if (sent < 0) {
-        LLOG(LLOG_ERROR, "relay_send_raw: sendto failed: %s", strerror(errno));
+        /* Rate-limit error logs: only once every 30 failures */
+        static int err_count = 0;
+        if (++err_count <= 3 || (err_count % 30 == 0)) {
+            LLOG(LLOG_ERROR, "relay_send_raw: sendto failed (%d): %s",
+                 err_count, strerror(errno));
+        }
         return -1;
     }
     lp->upload_packet++;
@@ -267,18 +272,35 @@ static void lan_client_process_auth_me(struct lan_play *lp,
 void lan_client_recv_thread_fn(void *arg)
 {
     struct lan_play *lp = (struct lan_play *)arg;
-    LLOG(LLOG_INFO, "relay: receive thread started (fd=%d)", lp->relay_fd);
+    LLOG(LLOG_INFO, "relay: receive thread started");
 
     while (lp->running) {
-        struct sockaddr_in from;
-        socklen_t from_len = sizeof(from);
+        mutexLock(&lp->mutex);
+        int fd = lp->relay_fd;
+        mutexUnlock(&lp->mutex);
 
-        ssize_t n = recvfrom(lp->relay_fd,
-                             lp->relay_buf, sizeof(lp->relay_buf), 0,
-                             (struct sockaddr *)&from, &from_len);
+        if (fd < 0) {
+            svcSleepThread(1000000000LL); /* 1 second */
+            continue;
+        }
+
+        ssize_t n = recvfrom(fd, lp->relay_buf, sizeof(lp->relay_buf), 0, NULL, NULL);
         if (n <= 0) {
-            if (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
-                LLOG(LLOG_ERROR, "relay: recvfrom error: %s", strerror(errno));
+            if (n < 0) {
+                int err = errno;
+                if (err == EBADF) {
+                    LLOG(LLOG_WARNING, "relay: recvfrom EBADF on fd %d, socket closed, retrying", fd);
+                    continue;
+                }
+                if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
+                    /* Rate-limit error logs: only once every 30 failures */
+                    static int err_count = 0;
+                    if (++err_count <= 3 || (err_count % 30 == 0)) {
+                        LLOG(LLOG_ERROR, "relay: recvfrom error (%d): %s (fd=%d)",
+                             err_count, strerror(errno), fd);
+                    }
+                }
+            }
             continue;
         }
 
@@ -291,9 +313,21 @@ void lan_client_recv_thread_fn(void *arg)
         case LAN_CLIENT_TYPE_KEEPALIVE:
             break;
         case LAN_CLIENT_TYPE_IPV4:
+            {
+                static int ipv4_count = 0;
+                if (++ipv4_count <= 8) {
+                    LLOG(LLOG_INFO, "relay: recv IPV4 packet len=%d count=%d", (int)n, ipv4_count);
+                }
+            }
             lan_client_process(lp, lp->relay_buf + 1, (uint16_t)(n - 1));
             break;
         case LAN_CLIENT_TYPE_IPV4_FRAG:
+            {
+                static int frag_count = 0;
+                if (++frag_count <= 8) {
+                    LLOG(LLOG_INFO, "relay: recv IPV4_FRAG packet len=%d count=%d", (int)n, frag_count);
+                }
+            }
             lan_client_process_frag(lp, lp->relay_buf + 1, (uint16_t)(n - 1));
             break;
         case LAN_CLIENT_TYPE_AUTH_ME:
@@ -316,9 +350,49 @@ void lan_client_keepalive_thread_fn(void *arg)
     struct lan_play *lp = (struct lan_play *)arg;
     LLOG(LLOG_INFO, "relay: keepalive thread started");
 
+    int consecutive_fails = 0;
+
     while (lp->running) {
         uint8_t ka = LAN_CLIENT_TYPE_KEEPALIVE;
-        relay_send_raw(lp, &ka, 1);
+        int ret = relay_send_raw(lp, &ka, 1);
+
+        if (ret < 0) {
+            int err = errno;
+            /* EHOSTUNREACH / ENETUNREACH = route temporarily missing (WiFi
+             * just reconnected).  The socket is fine; don't destroy it —
+             * just wait for the routing table to recover. */
+            if (err == EHOSTUNREACH || err == ENETUNREACH) {
+                LLOG(LLOG_WARNING, "relay: route not ready (%s), waiting...", strerror(err));
+                /* Sleep in 1-second chunks so we can terminate quickly */
+                for (int i = 0; i < 10 && lp->running; i++)
+                    svcSleepThread(1000000000LL);
+                continue;
+            }
+
+            consecutive_fails++;
+            /* After 6 consecutive failures (≈60s), try recreating the socket */
+            if (consecutive_fails >= 6) {
+                LLOG(LLOG_WARNING, "relay: %d keepalive failures, recreating socket...",
+                     consecutive_fails);
+                mutexLock(&lp->mutex);
+                lan_client_close(lp);
+                /* Brief pause so the BSD service can free the socket buffers
+                 * before we allocate a new one (prevents ENOBUFS). */
+                svcSleepThread(2000000000LL);
+                if (lan_client_init(lp) == 0) {
+                    LLOG(LLOG_INFO, "relay: socket recreated fd=%d", lp->relay_fd);
+                } else {
+                    LLOG(LLOG_ERROR, "relay: failed to recreate socket");
+                }
+                mutexUnlock(&lp->mutex);
+                consecutive_fails = 0;
+            }
+        } else {
+            if (consecutive_fails > 0) {
+                LLOG(LLOG_INFO, "relay: keepalive OK after %d failures", consecutive_fails);
+            }
+            consecutive_fails = 0;
+        }
 
         /* Also toggle next_real_broadcast so every 1 s we do a real broadcast */
         lp->next_real_broadcast = true;

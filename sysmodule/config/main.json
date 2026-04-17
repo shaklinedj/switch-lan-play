@@ -6,11 +6,11 @@
 	"main_thread_stack_size":	"0x00004000",
 	"main_thread_priority":	44,
 	"default_cpu_id":	3,
-	"process_category":	0,
+	"process_category":	1,
 	"is_retail":	true,
 	"pool_partition":	2,
 	"is_64_bit":	true,
-	"address_space_type":	1,
+	"address_space_type":	3,
 	"filesystem_access":	{
 		"permissions":	"0xffffffffffffffff"
 	},
@@ -20,8 +20,8 @@
 			"type":	"kernel_flags",
 			"value":	{
 				"highest_thread_priority":	63,
-				"lowest_thread_priority":	24,
-				"lowest_cpu_id":	3,
+				"lowest_thread_priority":	21,
+				"lowest_cpu_id":	0,
 				"highest_cpu_id":	3
 			}
 		}, {

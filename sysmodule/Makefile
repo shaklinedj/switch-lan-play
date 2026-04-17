@@ -96,11 +96,22 @@ atmosphere: all
 	@mkdir -p atmosphere/contents/$(TITLE_ID)/flags
 	@mkdir -p atmosphere/contents/$(TITLE_ID)/exefs
 	@cp $(TARGET).nso atmosphere/contents/$(TITLE_ID)/exefs/main
-	@if command -v npdmtool >/dev/null 2>&1; then \
+	@if [ -f final_v1.13/atmosphere/contents/$(TITLE_ID)/exefs/main.npdm ]; then \
+	    cp final_v1.13/atmosphere/contents/$(TITLE_ID)/exefs/main.npdm atmosphere/contents/$(TITLE_ID)/exefs/main.npdm; \
+	    echo "  [OK] NPDM copied from final_v1.13 stable package"; \
+	elif [ -f atmosphere/contents/$(TITLE_ID)/exefs/main.npdm ]; then \
+	    echo "  [OK] Reusing existing NPDM (stable)"; \
+	elif command -v npdmtool >/dev/null 2>&1; then \
 	    npdmtool config/main.json atmosphere/contents/$(TITLE_ID)/exefs/main.npdm; \
 	    echo "  [OK] NPDM compiled"; \
 	else \
-	    echo "  [!] npdmtool not found — copy a pre-built main.npdm manually (see README.md)"; \
+	    echo "  [!] npdmtool not found and no stable NPDM available"; \
+	fi
+	@if command -v build_pfs0 >/dev/null 2>&1; then \
+	    build_pfs0 atmosphere/contents/$(TITLE_ID)/exefs atmosphere/contents/$(TITLE_ID)/exefs.nsp; \
+	    echo "  [OK] exefs.nsp generated"; \
+	else \
+	    echo "  [!] build_pfs0 not found — exefs.nsp not generated"; \
 	fi
 	@touch atmosphere/contents/$(TITLE_ID)/flags/boot2.flag
 	@echo ""
