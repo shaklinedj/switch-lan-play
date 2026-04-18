@@ -86,6 +86,9 @@ sdmc:/
 |   |       +-- toolbox.json
 |   +-- hosts/
 |       +-- default.txt                <- DNS overrides (opcional)
++-- config/
+|   +-- lan-play/
+|       +-- config.ini                 <- relay por defecto: tekn0.net:11451
 +-- switch/
     +-- .overlays/
     |   +-- ldnmitm_config.ovl         <- overlay Tesla para ldn_mitm
@@ -100,9 +103,10 @@ sdmc:/
 ### Paso 3 — Configurar el servidor relay
 
 1. Reinicia la Switch (ambos sysmodules arrancan automaticamente con `boot2.flag`)
-2. Abre **Homebrew Menu** -> lanza **"LanPlay Setup"**
-3. Pulsa **A**, escribe la direccion del relay (ej: `192.168.1.100:11451`) y pulsa **+**
-4. Reinicia la Switch
+2. El paquete ya incluye `sdmc:/config/lan-play/config.ini` con `tekn0.net:11451`
+3. Si quieres cambiarlo, abre **Homebrew Menu** -> lanza **"LanPlay Setup"**
+4. Pulsa **A**, escribe la direccion del relay (ej: `192.168.1.100:11451`) y pulsa **+**
+5. Reinicia la Switch
 
 ### Paso 4 — Jugar
 
@@ -267,7 +271,7 @@ Ubicacion: `sdmc:/config/lan-play/config.ini`
 
 ```ini
 [server]
-relay_addr = 192.168.1.100:11451
+relay_addr = tekn0.net:11451
 
 ; Opcional: fijar IP virtual (por defecto se genera del numero de serie)
 ; ip = 10.13.5.10
