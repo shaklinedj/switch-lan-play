@@ -271,10 +271,89 @@ class SLPPeerClient {
           const ldnTypeNames: Record<number, string> = { 0: 'Scan', 1: 'ScanResp', 2: 'Connect', 3: 'SyncNetwork' }
           const typeName = ldnTypeNames[ldnType] ?? `Unknown(${ldnType})`
           console.log(`[LDN] ${srcIp} → ${dstIp}  type=${typeName}  bodyLen=${ldnBodyLen}  total=${udpData.length}`)
-          if (ldnType === 1 && udpData.length > 12) {
-            // ScanResp — contiene NetworkInfo
+          if (ldnType === 1 && udpData.length > 20) {
+            // ScanResp — contiene NetworkInfo (puede estar comprimido con RLE de 0x00)
+            const rawBody = udpData.slice(12) // saltar LDN header de 12 bytes
+
+            // Descomprimir si compressed=1 (RLE: byte 0x00 seguido de count expande a count+1 ceros)
+            let body = rawBody
+            if (ldnCompressed) {
+              const decompLen = udpData.readUInt16LE(8) // decompress_length en header bytes 8-9
+              const out = Buffer.alloc(decompLen > 0 ? decompLen : 2048, 0)
+              let r = 0, w = 0
+              while (r < rawBody.length && w < out.length) {
+                const c = rawBody[r++]
+                out[w++] = c
+                if (c === 0 && r < rawBody.length) {
+                  const cnt = rawBody[r++]
+                  for (let x = 0; x < cnt && w < out.length; x++) out[w++] = 0
+                }
+              }
+              body = out.slice(0, w)
+            }
+
+            // NetworkInfo layout (little-endian):
+            //   networkId.intentId.localCommunicationId  u64 LE  @ offset 0
+            //   networkId.intentId._unk1[2]              @ offset 8
+            //   networkId.intentId.sceneId               u16 LE  @ offset 10
+            //   ... (networkId total 32 bytes)
+            //   CommonNetworkInfo (48 bytes)             @ offset 32
+            //   LdnNetworkInfo.unkRandom[16]             @ offset 80
+            //   ... nodeCountMax u8                      @ offset 102
+            //   ... nodeCount u8                         @ offset 103
+            //   nodes[0].ipv4Address u32 LE              @ offset 104
+            //   nodes[0].macAddress[6]                   @ offset 108
+            //   nodes[0].nodeId s8                       @ offset 114
+            //   nodes[0].isConnected s8                  @ offset 115
+            //   nodes[0].userName[33]                    @ offset 116
+            const lcWord0 = body.readUInt32LE(0)
+            const lcWord1 = body.readUInt32LE(4)
+            const lcIdHex = `0x${lcWord1.toString(16).padStart(8,'0')}${lcWord0.toString(16).padStart(8,'0')}`
+
+            const sceneId = body.readUInt16LE(10)
+
+            // Nombre de usuario del nodo 0
+            let userName = ''
+            if (body.length >= 150) {
+              userName = body.slice(116, 149).toString('utf8').replace(/\0.*/, '').trim()
+            }
+
+            // Intentar leer ASCII del payload para debug
+            const asciiParts: string[] = []
+            for (let i = 0; i < Math.min(body.length, 256); i++) {
+              const c = body[i]
+              if (c >= 0x20 && c < 0x7F) asciiParts.push(String.fromCharCode(c))
+              else if (asciiParts.length > 0 && asciiParts[asciiParts.length-1] !== '|') asciiParts.push('|')
+            }
+            const asciiStr = asciiParts.join('').split('|').filter(s => s.length >= 3).join(' | ')
+
+            // Lookup de juegos conocidos por localCommunicationId
+            const KNOWN_GAMES: Record<string, string> = {
+              '0x1520000002200000': 'Mario Kart 8 Deluxe',   // verificado en vivo
+              '0x0100152000022000': 'Mario Kart 8 Deluxe',
+              '0x01006a800016e000': 'Super Smash Bros. Ultimate',
+              '0x01006f8002326000': 'Animal Crossing: New Horizons',
+              '0x01003bc0000a0000': 'Splatoon 2',
+              '0x0100c25003e6a000': 'Splatoon 3',
+              '0x0100abf008968000': 'Pokemon Sword',
+              '0x01008db008c2c000': 'Pokemon Shield',
+              '0x0102c6000fd20000': 'Pokemon Scarlet',
+              '0x0102c6000fd22000': 'Pokemon Violet',
+              '0x0100d71004694000': 'Minecraft',
+              '0x0100b04011742000': 'Monster Hunter Rise',
+              '0x0100770008dd8000': 'Luigi\'s Mansion 3',
+              '0x0100f2c0115b6000': 'Mario Party Superstars',
+              '0x01006fe013472000': 'Kirby\'s Return to Dream Land Deluxe',
+              '0x0100904005c52000': 'Mario Tennis Aces',
+            }
+            const gameName = KNOWN_GAMES[lcIdHex.toLowerCase()] ?? `Juego desconocido`
+
             console.log(`[LDN/ScanResp] *** SALA ENCONTRADA desde ${srcIp} ***`)
-            console.log(`[LDN/ScanResp] Payload hex (first 64): ${udpData.slice(12, 76).toString('hex')}`)
+            console.log(`[LDN/ScanResp]   Juego       : ${gameName}`)
+            console.log(`[LDN/ScanResp]   CommId      : ${lcIdHex}`)
+            console.log(`[LDN/ScanResp]   SceneId     : ${sceneId}`)
+            if (userName) console.log(`[LDN/ScanResp]   Usuario     : ${userName}`)
+            if (asciiStr) console.log(`[LDN/ScanResp]   Texto ASCII : ${asciiStr}`)
           }
           return
         }
