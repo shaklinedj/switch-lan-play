@@ -429,6 +429,8 @@ static void write_status_error(const char* error_msg) {
 
 static int run_service(void)
 {
+    struct stat cfg_stat;
+    time_t last_config_mtime = 0;
     if (R_SUCCEEDED(g_rc_fs)) ensure_tmp_dir();
 
     LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting ===");
@@ -725,8 +727,6 @@ static int run_service(void)
     /* ------------------------------------------------------------------ */
 
     /* Track config.ini modification time for hot-reload */
-    struct stat cfg_stat;
-    time_t last_config_mtime = 0;
     if (stat("sdmc:/config/lan-play/config.ini", &cfg_stat) == 0) {
         last_config_mtime = cfg_stat.st_mtime;
     }
