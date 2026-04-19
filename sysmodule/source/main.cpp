@@ -514,6 +514,10 @@ static int run_service(void)
     lp->current_ping_ms    = 0;
     lp->connection_healthy = false;
 
+    /* Power management */
+    lp->last_game_activity = armGetSystemTick();
+    lp->idle_mode          = false;
+
     mutexInit(&lp->mutex);
 
     /* ------------------------------------------------------------------ */
@@ -732,6 +736,7 @@ static int run_service(void)
             fprintf(sf, "reconnects=%u\n", lp->relay_reconnects);
             fprintf(sf, "ping_ms=%u\n", lp->current_ping_ms);
             fprintf(sf, "healthy=%d\n", lp->connection_healthy ? 1 : 0);
+            fprintf(sf, "idle=%d\n", lp->idle_mode ? 1 : 0);
             fprintf(sf, "my_ip=%s\n", cfg.my_ip);
             fclose(sf);
         }

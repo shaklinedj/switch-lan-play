@@ -330,6 +330,10 @@ struct lan_play {
     uint32_t current_ping_ms;      /* last measured round-trip to relay (0 = unknown) */
     bool     connection_healthy;   /* true if keepalive is succeeding */
 
+    /* Power management */
+    uint64_t last_game_activity;   /* armGetSystemTick() of last game packet */
+    bool     idle_mode;            /* true = no game traffic, reduced polling */
+
     /* Threading */
     Thread         relay_thread;
     Thread         tap_thread;

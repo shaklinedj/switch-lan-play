@@ -53,6 +53,7 @@ static int relay_send_raw(struct lan_play *lp, const void *data, size_t len)
     }
     lp->upload_packet++;
     lp->upload_byte += (uint64_t)len;
+    lp->last_game_activity = armGetSystemTick();
     return 0;
 }
 
@@ -156,6 +157,9 @@ static int lan_client_process(struct lan_play *lp,
                               const uint8_t *packet, uint16_t len)
 {
     if (len == 0) return 0;
+
+    /* Stamp activity: a real game packet arrived from the relay */
+    lp->last_game_activity = armGetSystemTick();
 
     uint8_t dst_mac[6];
     const uint8_t *dst = packet + IPV4_OFF_DST;
@@ -459,8 +463,38 @@ void lan_client_keepalive_thread_fn(void *arg)
         /* Also toggle next_real_broadcast so we do a real broadcast periodically */
         lp->next_real_broadcast = true;
 
+        /* ---- Adaptive power management ----
+         * If no game packets have flowed for 30 seconds, enter idle mode:
+         *   - Keepalive every 30s instead of 10s (3× fewer CPU wakeups)
+         *   - Log transition for diagnostics
+         * Wake up instantly when game traffic resumes. */
+        int sleep_seconds = backoff_seconds;
+        {
+            uint64_t now_tick = armGetSystemTick();
+            uint64_t freq = armGetSystemTickFreq();
+            uint64_t idle_threshold_s = 30;
+            bool was_idle = lp->idle_mode;
+
+            if (freq > 0 && lp->last_game_activity > 0) {
+                uint64_t elapsed_s = (now_tick - lp->last_game_activity) / freq;
+                if (elapsed_s >= idle_threshold_s) {
+                    if (!was_idle) {
+                        LLOG(LLOG_INFO, "power: entering idle mode (no game traffic for %llus)",
+                             (unsigned long long)elapsed_s);
+                    }
+                    lp->idle_mode = true;
+                    sleep_seconds = 30; /* reduce wakeups: 30s keepalive */
+                } else {
+                    if (was_idle) {
+                        LLOG(LLOG_INFO, "power: leaving idle mode (game traffic resumed)");
+                    }
+                    lp->idle_mode = false;
+                }
+            }
+        }
+
         /* Sleep in 1-second chunks so we can terminate quickly on reboot/reload */
-        for (int i = 0; i < backoff_seconds && lp->running; i++) {
+        for (int i = 0; i < sleep_seconds && lp->running; i++) {
             svcSleepThread(1000000000LL); /* 1 second */
         }
     }
