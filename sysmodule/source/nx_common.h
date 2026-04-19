@@ -340,6 +340,10 @@ struct lan_play {
     uint64_t wd_keepalive;         /* lan_client_keepalive_thread_fn */
     uint64_t wd_ldn_udp;           /* ldn_bridge_udp_thread_fn */
 
+    /* Anti-Flood Rate Limiting (Relay WAN) */
+    uint64_t rl_last_sec_tick;
+    uint32_t rl_packets_this_sec;
+
     /* Threading */
     Thread         relay_thread;
     Thread         tap_thread;

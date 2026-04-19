@@ -320,6 +320,25 @@ void lan_client_recv_thread_fn(void *arg)
             continue;
         }
 
+        /* Anti-Flood Rate Limiting */
+        uint64_t now_tick = armGetSystemTick();
+        uint64_t freq = armGetSystemTickFreq();
+        if (freq > 0) {
+            uint64_t current_sec = now_tick / freq;
+            if (current_sec != lp->rl_last_sec_tick) {
+                lp->rl_last_sec_tick = current_sec;
+                lp->rl_packets_this_sec = 0;
+            }
+            if (++lp->rl_packets_this_sec > 2000) {
+                lp->packets_dropped++;
+                static int flood_warn = 0;
+                if (++flood_warn <= 3 || (flood_warn % 1000 == 0)) {
+                    LLOG(LLOG_WARNING, "relay: anti-flood triggered! >2000 pkt/sec, dropping");
+                }
+                continue; /* Drop packet if exceeding 2000 pkt/sec */
+            }
+        }
+
         lp->download_packet++;
         lp->download_byte += (uint64_t)n;
 

@@ -531,6 +531,10 @@ static int run_service(void)
     uint64_t now_tick = armGetSystemTick();
     lp->wd_tap = lp->wd_relay = lp->wd_keepalive = lp->wd_ldn_udp = now_tick;
 
+    /* Anti-flood */
+    lp->rl_last_sec_tick = 0;
+    lp->rl_packets_this_sec = 0;
+
     mutexInit(&lp->mutex);
 
     /* ------------------------------------------------------------------ */
