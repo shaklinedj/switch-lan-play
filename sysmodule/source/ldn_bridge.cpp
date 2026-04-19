@@ -82,6 +82,39 @@ static const char *ldn_type_name(uint8_t type) {
 }
 
 /* ------------------------------------------------------------------ */
+/*  Packet validation                                                   */
+/* ------------------------------------------------------------------ */
+
+bool ldn_validate_packet(const void *data, size_t size)
+{
+    if (size < LDN_HEADER_SIZE) return false;
+
+    const struct ldn_packet_header *hdr = (const struct ldn_packet_header *)data;
+
+    /* Magic number check */
+    if (hdr->magic != LDN_MAGIC) return false;
+
+    /* Type range check */
+    if (hdr->type > LDN_TYPE_SYNC_NETWORK) return false;
+
+    /* Body length must not exceed what we actually received */
+    uint16_t body_len = hdr->length;
+    if (body_len > (size - LDN_HEADER_SIZE)) return false;
+
+    /* Sanity cap — no legitimate LDN body exceeds LDN_MAX_BODY_SIZE */
+    if (body_len > LDN_MAX_BODY_SIZE) return false;
+
+    /* Compression sanity: if compressed, decompress_length must be
+     * at least as large as the compressed length and within our cap. */
+    if (hdr->compressed) {
+        if (hdr->decompress_length < body_len) return false;
+        if (hdr->decompress_length > LDN_MAX_DECOMPRESSED_SIZE) return false;
+    }
+
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
 /*  Helpers                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -142,11 +175,10 @@ static int build_ip_udp(uint8_t *out, int max_out,
 void ldn_bridge_rewrite_ips(struct lan_play *lp, void *ldn_data, int len,
                             bool outgoing)
 {
-    /* We need at least an LDN header to check type */
     if (len < LDN_HEADER_SIZE) return;
 
     struct ldn_packet_header *hdr = (struct ldn_packet_header *)ldn_data;
-    if (hdr->magic != LDN_MAGIC) return;
+    if (!ldn_validate_packet(ldn_data, (size_t)len)) return;
 
     /* We only rewrite ScanResp, Connect, and SyncNetwork which carry
      * NetworkInfo (containing node IP addresses) */
@@ -303,25 +335,17 @@ int ldn_bridge_inject(struct lan_play *lp, const void *udp_payload,
     (void)lp;
     if (g_bridge_inject_fd < 0 || payload_len <= 0) return -1;
 
-    /* Verify it's an LDN packet */
-    if (payload_len < LDN_HEADER_SIZE) {
-        static int short_count = 0;
-        if (++short_count <= 5) {
-            LLOG(LLOG_WARNING, "ldn_bridge: inject skip short payload from relay src=%u len=%d",
+    /* Verify it's a valid LDN packet */
+    if (!ldn_validate_packet(udp_payload, (size_t)payload_len)) {
+        static int bad_pkt_count = 0;
+        if (++bad_pkt_count <= 8) {
+            LLOG(LLOG_WARNING,
+                 "ldn_bridge: inject invalid LDN packet from relay src=%u len=%d",
                  src_port, payload_len);
         }
         return 0;
     }
     const struct ldn_packet_header *hdr = (const struct ldn_packet_header *)udp_payload;
-    if (hdr->magic != LDN_MAGIC) {
-        static int bad_magic_count = 0;
-        if (++bad_magic_count <= 8) {
-            LLOG(LLOG_WARNING,
-                 "ldn_bridge: inject non-LDN payload from relay src=%u len=%d magic=%08x",
-                 src_port, payload_len, hdr->magic);
-        }
-        return 0;
-    }
 
     /* Send via loopback to ldn_mitm's UDP socket on port 11452.
      * Using 127.0.0.1 instead of 255.255.255.255 because on Horizon
@@ -381,10 +405,9 @@ void ldn_bridge_udp_thread_fn(void *arg)
             continue;
         }
 
-        /* Verify LDN magic */
-        if (n < LDN_HEADER_SIZE) continue;
+        /* Verify LDN packet is valid */
+        if (!ldn_validate_packet(recv_buf, (size_t)n)) continue;
         struct ldn_packet_header *hdr = (struct ldn_packet_header *)recv_buf;
-        if (hdr->magic != LDN_MAGIC) continue;
 
         /* Make sure our WiFi IP is current */
         if (g_wifi_ip == 0) refresh_wifi_ip();

@@ -158,7 +158,7 @@ int tap_send_packet(struct lan_play *lp, const void *eth_frame, int len)
         /* === LDN Bridge: packets targeting port 11452 are LDN traffic ===
          * Route them through the bridge injection which broadcasts to
          * ldn_mitm with proper IP rewriting. */
-        if (dst_port == LDN_GAME_PORT && payload_len >= 12) {
+        if (dst_port == LDN_GAME_PORT && ldn_validate_packet(udp_payload, (size_t)payload_len)) {
             static int ldn_in_count = 0;
             const struct ldn_packet_header *ldn_hdr = (const struct ldn_packet_header *)udp_payload;
             if (++ldn_in_count <= 8) {

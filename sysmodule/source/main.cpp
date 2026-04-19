@@ -30,6 +30,7 @@
 #include "ldn_bridge.h"
 #include "packet.h"
 #include "sha1.h"
+#include "lp_pool.h"
 
 /* bsd.h needed for bsdInitialize() — same init pattern as ldn_mitm */
 extern "C" {
@@ -424,6 +425,9 @@ static int run_service(void)
     if (R_SUCCEEDED(g_rc_fs)) ensure_tmp_dir();
 
     LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting ===");
+
+    /* Initialise static memory pool (must happen before any threads) */
+    lp_pool_init();
 
     /* ------------------------------------------------------------------ */
     /* 0. Wait for Network to be fully established by Horizon (Boot time) */

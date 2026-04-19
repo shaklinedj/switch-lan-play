@@ -22,6 +22,10 @@ extern "C" {
 #define LDN_TYPE_CONNECT       2
 #define LDN_TYPE_SYNC_NETWORK  3
 
+/* Validation limits */
+#define LDN_MAX_BODY_SIZE          4096    /* largest plausible LDN body */
+#define LDN_MAX_DECOMPRESSED_SIZE  (64*1024) /* safety cap for decompression */
+
 #pragma pack(push, 1)
 struct ldn_packet_header {
     uint32_t magic;
@@ -71,6 +75,13 @@ int  ldn_bridge_inject(struct lan_play *lp, const void *udp_payload,
  */
 void ldn_bridge_rewrite_ips(struct lan_play *lp, void *ldn_data, int len,
                             bool outgoing);
+
+/**
+ * Validate an LDN packet: magic, type, length bounds, compression sanity.
+ * Returns true if the packet is well-formed, false otherwise.
+ * Does NOT modify the packet.
+ */
+bool ldn_validate_packet(const void *data, size_t size);
 
 #ifdef __cplusplus
 }

@@ -10,6 +10,7 @@
  */
 #include "lan_client_nx.h"
 #include "packet.h"
+#include "lp_pool.h"
 
 /* SLP relay protocol type bytes (mirrors src/lan-client.c) */
 #define LAN_CLIENT_TYPE_KEEPALIVE   0x00
@@ -80,13 +81,13 @@ static int lan_client_send(struct lan_play *lp, uint8_t type,
 
             /* Assemble: [type(1)] [header(16)] [data(part_len)] */
             size_t total = 1 + LC_FRAG_HEADER_LEN + part_len;
-            uint8_t *buf = (uint8_t *)malloc(total);
+            uint8_t *buf = (uint8_t *)lp_pool_alloc(total);
             if (!buf) return -1;
             buf[0] = frag_type;
             memcpy(buf + 1,                        header, LC_FRAG_HEADER_LEN);
             memcpy(buf + 1 + LC_FRAG_HEADER_LEN,   packet + pos, part_len);
             int ret = relay_send_raw(lp, buf, total);
-            free(buf);
+            lp_pool_free(buf);
             if (ret) return ret;
         }
         return 0;
@@ -94,7 +95,7 @@ static int lan_client_send(struct lan_play *lp, uint8_t type,
 
     /* Non-fragmented: [type(1)] [data(len)] */
     size_t total = 1 + len;
-    uint8_t *buf = (uint8_t *)malloc(total);
+    uint8_t *buf = (uint8_t *)lp_pool_alloc(total);
     if (!buf) {
         LLOG(LLOG_ERROR, "lan_client_send: out of memory (%zu bytes)", total);
         return -1;
@@ -102,7 +103,7 @@ static int lan_client_send(struct lan_play *lp, uint8_t type,
     buf[0] = type;
     if (len > 0) memcpy(buf + 1, packet, len);
     int ret = relay_send_raw(lp, buf, total);
-    free(buf);
+    lp_pool_free(buf);
     return ret;
 }
 
@@ -184,6 +185,16 @@ static int lan_client_process_frag(struct lan_play *lp,
     uint8_t  part_num   = READ_NET8(packet,  LC_FRAG_PART);
     uint8_t  total_part = READ_NET8(packet,  LC_FRAG_TOTAL_PART);
     uint16_t frag_len   = READ_NET16(packet, LC_FRAG_LEN);
+
+    /* Bounds validation: reject obviously malformed fragments */
+    if (total_part == 0 || total_part > 8) {
+        LLOG(LLOG_WARNING, "relay: frag total_part=%d out of range, dropping", total_part);
+        return 0;
+    }
+    if (part_num >= total_part) {
+        LLOG(LLOG_WARNING, "relay: frag part_num=%d >= total_part=%d, dropping", part_num, total_part);
+        return 0;
+    }
     uint16_t pmtu       = READ_NET16(packet, LC_FRAG_PMTU);
 
     struct lan_client_fragment *frag = NULL;
@@ -314,24 +325,48 @@ void lan_client_recv_thread_fn(void *arg)
             break;
         case LAN_CLIENT_TYPE_IPV4:
             {
+                uint16_t payload_len = (uint16_t)(n - 1);
+                /* Minimum valid IPv4 header is 20 bytes */
+                if (payload_len < 20) {
+                    static int short_ipv4 = 0;
+                    if (++short_ipv4 <= 5)
+                        LLOG(LLOG_WARNING, "relay: IPV4 too short (%d bytes), dropping", payload_len);
+                    break;
+                }
                 static int ipv4_count = 0;
                 if (++ipv4_count <= 8) {
                     LLOG(LLOG_INFO, "relay: recv IPV4 packet len=%d count=%d", (int)n, ipv4_count);
                 }
+                lan_client_process(lp, lp->relay_buf + 1, payload_len);
             }
-            lan_client_process(lp, lp->relay_buf + 1, (uint16_t)(n - 1));
             break;
         case LAN_CLIENT_TYPE_IPV4_FRAG:
             {
+                uint16_t payload_len = (uint16_t)(n - 1);
+                /* Fragment header is LC_FRAG_HEADER_LEN (16) bytes minimum */
+                if (payload_len < LC_FRAG_HEADER_LEN) {
+                    static int short_frag = 0;
+                    if (++short_frag <= 5)
+                        LLOG(LLOG_WARNING, "relay: IPV4_FRAG too short (%d bytes), dropping", payload_len);
+                    break;
+                }
                 static int frag_count = 0;
                 if (++frag_count <= 8) {
                     LLOG(LLOG_INFO, "relay: recv IPV4_FRAG packet len=%d count=%d", (int)n, frag_count);
                 }
+                lan_client_process_frag(lp, lp->relay_buf + 1, payload_len);
             }
-            lan_client_process_frag(lp, lp->relay_buf + 1, (uint16_t)(n - 1));
             break;
         case LAN_CLIENT_TYPE_AUTH_ME:
-            lan_client_process_auth_me(lp, lp->relay_buf + 1, (uint16_t)(n - 1));
+            {
+                uint16_t payload_len = (uint16_t)(n - 1);
+                /* Auth packet must have at least 1 byte (auth_type) */
+                if (payload_len < 1) {
+                    LLOG(LLOG_WARNING, "relay: AUTH_ME empty, dropping");
+                    break;
+                }
+                lan_client_process_auth_me(lp, lp->relay_buf + 1, payload_len);
+            }
             break;
         case LAN_CLIENT_TYPE_INFO:
             LLOG(LLOG_INFO, "[Server]: %.*s", (int)(n - 1), lp->relay_buf + 1);
