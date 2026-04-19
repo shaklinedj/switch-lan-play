@@ -35,6 +35,10 @@ CFLAGS      := -g -Wall -O2 -ffunction-sections \
                -DLANPLAY_LITTLE_ENDIAN \
                -D__SWITCH__
 
+# Security hardening (P0): catch stack overflows, string overflows, and format bugs
+CFLAGS      += -fstack-protector-strong -D_FORTIFY_SOURCE=2 \
+               -Wformat -Wformat-security
+
 CFLAGS      += $(INCLUDE) -D__SWITCH__
 
 CXXFLAGS    := $(CFLAGS) -fno-rtti -fno-exceptions -std=gnu++17

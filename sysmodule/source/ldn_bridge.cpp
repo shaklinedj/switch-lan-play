@@ -393,6 +393,7 @@ void ldn_bridge_udp_thread_fn(void *arg)
     refresh_wifi_ip();
 
     while (lp->running) {
+        lp->wd_ldn_udp = armGetSystemTick(); /* watchdog pet */
         struct sockaddr_in from;
         socklen_t from_len = sizeof(from);
 

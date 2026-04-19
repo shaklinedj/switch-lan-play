@@ -237,6 +237,7 @@ void tap_recv_thread_fn(void *arg)
     LLOG(LLOG_INFO, "tap: receive thread started (fd=%d)", lp->bpf_fd);
 
     while (lp->running) {
+        lp->wd_tap = armGetSystemTick(); /* watchdog pet */
         struct sockaddr_in src_addr;
         socklen_t addr_len = sizeof(src_addr);
 

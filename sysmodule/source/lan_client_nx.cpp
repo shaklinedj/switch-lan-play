@@ -290,6 +290,7 @@ void lan_client_recv_thread_fn(void *arg)
     LLOG(LLOG_INFO, "relay: receive thread started");
 
     while (lp->running) {
+        lp->wd_relay = armGetSystemTick(); /* watchdog pet */
         mutexLock(&lp->mutex);
         int fd = lp->relay_fd;
         mutexUnlock(&lp->mutex);
@@ -395,6 +396,8 @@ void lan_client_keepalive_thread_fn(void *arg)
     lp->connection_healthy = true;
 
     while (lp->running) {
+        lp->wd_keepalive = armGetSystemTick(); /* watchdog pet */
+
         /* Measure RTT: timestamp before sendto */
         uint64_t t_start = armGetSystemTick();
 

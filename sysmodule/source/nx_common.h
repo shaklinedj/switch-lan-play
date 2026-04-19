@@ -334,6 +334,12 @@ struct lan_play {
     uint64_t last_game_activity;   /* armGetSystemTick() of last game packet */
     bool     idle_mode;            /* true = no game traffic, reduced polling */
 
+    /* Watchdog: each thread stamps its tick every iteration */
+    uint64_t wd_tap;               /* tap_recv_thread_fn */
+    uint64_t wd_relay;             /* lan_client_recv_thread_fn */
+    uint64_t wd_keepalive;         /* lan_client_keepalive_thread_fn */
+    uint64_t wd_ldn_udp;           /* ldn_bridge_udp_thread_fn */
+
     /* Threading */
     Thread         relay_thread;
     Thread         tap_thread;

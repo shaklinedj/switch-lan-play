@@ -518,6 +518,10 @@ static int run_service(void)
     lp->last_game_activity = armGetSystemTick();
     lp->idle_mode          = false;
 
+    /* Watchdog init */
+    uint64_t now_tick = armGetSystemTick();
+    lp->wd_tap = lp->wd_relay = lp->wd_keepalive = lp->wd_ldn_udp = now_tick;
+
     mutexInit(&lp->mutex);
 
     /* ------------------------------------------------------------------ */
@@ -761,6 +765,36 @@ static int run_service(void)
                 break;
             }
             last_config_mtime = cfg_stat.st_mtime;
+        }
+
+        /* ---- Watchdog: detect stuck threads ---- */
+        {
+            uint64_t wd_now   = armGetSystemTick();
+            uint64_t wd_freq  = armGetSystemTickFreq();
+            if (wd_freq > 0) {
+                /* Normal threads: 60s timeout.  Keepalive: 120s (it sleeps up to 60s in idle). */
+                uint64_t timeout_normal = 60;
+                uint64_t timeout_ka     = 120;
+
+                #define WD_CHECK(name, field, timeout) do { \
+                    if (lp->field > 0) { \
+                        uint64_t age = (wd_now - lp->field) / wd_freq; \
+                        if (age > (timeout)) { \
+                            static int wd_warn_##field = 0; \
+                            if (++wd_warn_##field <= 3) \
+                                LLOG(LLOG_WARNING, "watchdog: %s not responding (%llus)", \
+                                     name, (unsigned long long)age); \
+                        } \
+                    } \
+                } while(0)
+
+                WD_CHECK("tap_recv",     wd_tap,       timeout_normal);
+                WD_CHECK("relay_recv",   wd_relay,     timeout_normal);
+                WD_CHECK("keepalive",    wd_keepalive, timeout_ka);
+                WD_CHECK("ldn_udp",      wd_ldn_udp,   timeout_normal);
+
+                #undef WD_CHECK
+            }
         }
 
         svcSleepThread(2000000000LL); /* 2 s check */
