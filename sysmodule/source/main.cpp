@@ -142,21 +142,28 @@ void nx_log(int level, const char *fmt, ...)
 {
     if (level > LLOG_DEBUG) return;
     
+    /* Uptime in seconds for log correlation */
+    static uint64_t boot_tick = 0;
+    if (boot_tick == 0) boot_tick = armGetSystemTick();
+    uint64_t freq = armGetSystemTickFreq();
+    uint64_t uptime_s = (freq > 0) ? (armGetSystemTick() - boot_tick) / freq : 0;
+
     char buf[1024];
     va_list ap;
     va_start(ap, fmt);
-    int len = snprintf(buf, sizeof(buf), "[LanPlay][%s] ", level_names[level]);
+    int len = snprintf(buf, sizeof(buf), "[%llus][%s] ",
+                       (unsigned long long)uptime_s, level_names[level]);
     vsnprintf(buf + len, sizeof(buf) - len, fmt, ap);
     va_end(ap);
 
     /* Atmosphere Debug Stream */
     svcOutputDebugString(buf, strlen(buf));
     
-    /* Persistent File Log - ROOT visibility */
+    /* Persistent File Log - ROOT visibility (64KB rotation) */
     const char *log_path = "sdmc:/lan-play.log";
     struct stat st;
-    if (stat(log_path, &st) == 0 && st.st_size > 102400) {
-        /* Rotate log: delete old and rename current */
+    if (stat(log_path, &st) == 0 && st.st_size > 65536) {
+        /* Rotate log: keep one previous */
         remove("sdmc:/lan-play.old.log");
         rename(log_path, "sdmc:/lan-play.old.log");
     }

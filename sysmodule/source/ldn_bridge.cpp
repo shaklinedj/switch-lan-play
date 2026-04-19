@@ -178,7 +178,7 @@ void ldn_bridge_rewrite_ips(struct lan_play *lp, void *ldn_data, int len,
     if (len < LDN_HEADER_SIZE) return;
 
     struct ldn_packet_header *hdr = (struct ldn_packet_header *)ldn_data;
-    if (!ldn_validate_packet(ldn_data, (size_t)len)) return;
+    if (!ldn_validate_packet(ldn_data, (size_t)len)) { lp->packets_dropped++; return; }
 
     /* We only rewrite ScanResp, Connect, and SyncNetwork which carry
      * NetworkInfo (containing node IP addresses) */
@@ -332,11 +332,11 @@ void ldn_bridge_close(struct lan_play *lp)
 int ldn_bridge_inject(struct lan_play *lp, const void *udp_payload,
                       int payload_len, uint16_t src_port)
 {
-    (void)lp;
     if (g_bridge_inject_fd < 0 || payload_len <= 0) return -1;
 
     /* Verify it's a valid LDN packet */
     if (!ldn_validate_packet(udp_payload, (size_t)payload_len)) {
+        lp->packets_dropped++;
         static int bad_pkt_count = 0;
         if (++bad_pkt_count <= 8) {
             LLOG(LLOG_WARNING,
@@ -407,7 +407,7 @@ void ldn_bridge_udp_thread_fn(void *arg)
         }
 
         /* Verify LDN packet is valid */
-        if (!ldn_validate_packet(recv_buf, (size_t)n)) continue;
+        if (!ldn_validate_packet(recv_buf, (size_t)n)) { lp->packets_dropped++; continue; }
         struct ldn_packet_header *hdr = (struct ldn_packet_header *)recv_buf;
 
         /* Make sure our WiFi IP is current */

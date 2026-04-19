@@ -333,6 +333,7 @@ void lan_client_recv_thread_fn(void *arg)
                 uint16_t payload_len = (uint16_t)(n - 1);
                 /* Minimum valid IPv4 header is 20 bytes */
                 if (payload_len < 20) {
+                    lp->packets_dropped++;
                     static int short_ipv4 = 0;
                     if (++short_ipv4 <= 5)
                         LLOG(LLOG_WARNING, "relay: IPV4 too short (%d bytes), dropping", payload_len);
@@ -350,6 +351,7 @@ void lan_client_recv_thread_fn(void *arg)
                 uint16_t payload_len = (uint16_t)(n - 1);
                 /* Fragment header is LC_FRAG_HEADER_LEN (16) bytes minimum */
                 if (payload_len < LC_FRAG_HEADER_LEN) {
+                    lp->packets_dropped++;
                     static int short_frag = 0;
                     if (++short_frag <= 5)
                         LLOG(LLOG_WARNING, "relay: IPV4_FRAG too short (%d bytes), dropping", payload_len);
@@ -367,6 +369,7 @@ void lan_client_recv_thread_fn(void *arg)
                 uint16_t payload_len = (uint16_t)(n - 1);
                 /* Auth packet must have at least 1 byte (auth_type) */
                 if (payload_len < 1) {
+                    lp->packets_dropped++;
                     LLOG(LLOG_WARNING, "relay: AUTH_ME empty, dropping");
                     break;
                 }
