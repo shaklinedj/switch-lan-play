@@ -508,6 +508,12 @@ static int run_service(void)
     lp->pmtu     = 0; /* no fragmentation by default */
     lp->wifi_ip  = g_local_wifi_ip; /* local WiFi IP for self-echo filtering in tap_recv */
 
+    /* Extended metrics */
+    lp->packets_dropped    = 0;
+    lp->relay_reconnects   = 0;
+    lp->current_ping_ms    = 0;
+    lp->connection_healthy = false;
+
     mutexInit(&lp->mutex);
 
     /* ------------------------------------------------------------------ */
@@ -702,8 +708,16 @@ static int run_service(void)
     /* ------------------------------------------------------------------ */
     /* 10. Service Loop (Restartable without reboot)                       */
     /* ------------------------------------------------------------------ */
+
+    /* Track config.ini modification time for hot-reload */
+    struct stat cfg_stat;
+    time_t last_config_mtime = 0;
+    if (stat("sdmc:/config/lan-play/config.ini", &cfg_stat) == 0) {
+        last_config_mtime = cfg_stat.st_mtime;
+    }
+
     while (true) {
-        /* Write status for the Homebrew App to read */
+        /* Write extended status for the Homebrew App / Overlay to read */
         FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
         if (sf) {
             fprintf(sf, "active=1\n");
@@ -713,6 +727,12 @@ static int run_service(void)
             fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
             fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
             fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
+            /* Extended metrics */
+            fprintf(sf, "dropped=%llu\n", (unsigned long long)lp->packets_dropped);
+            fprintf(sf, "reconnects=%u\n", lp->relay_reconnects);
+            fprintf(sf, "ping_ms=%u\n", lp->current_ping_ms);
+            fprintf(sf, "healthy=%d\n", lp->connection_healthy ? 1 : 0);
+            fprintf(sf, "my_ip=%s\n", cfg.my_ip);
             fclose(sf);
         }
 
@@ -725,6 +745,17 @@ static int run_service(void)
             /* Give FS time to commit the config.ini changes from hbapp */
             svcSleepThread(1000000000LL);
             break; /* Exit inner loop to trigger reload */
+        }
+
+        /* Hot-reload: detect config.ini changes without needing .reload file */
+        if (stat("sdmc:/config/lan-play/config.ini", &cfg_stat) == 0) {
+            if (last_config_mtime != 0 && cfg_stat.st_mtime != last_config_mtime) {
+                LLOG(LLOG_INFO, "Config file changed (mtime %ld → %ld) — hot-reloading...",
+                     (long)last_config_mtime, (long)cfg_stat.st_mtime);
+                svcSleepThread(1000000000LL); /* let writes finish */
+                break;
+            }
+            last_config_mtime = cfg_stat.st_mtime;
         }
 
         svcSleepThread(2000000000LL); /* 2 s check */

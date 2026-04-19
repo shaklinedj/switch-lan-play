@@ -324,6 +324,12 @@ struct lan_play {
     uint64_t upload_packet;
     uint64_t download_packet;
 
+    /* Extended metrics (for homebrew app / overlay) */
+    uint64_t packets_dropped;      /* malformed or rejected packets */
+    uint32_t relay_reconnects;     /* how many times the socket was recreated */
+    uint32_t current_ping_ms;      /* last measured round-trip to relay (0 = unknown) */
+    bool     connection_healthy;   /* true if keepalive is succeeding */
+
     /* Threading */
     Thread         relay_thread;
     Thread         tap_thread;

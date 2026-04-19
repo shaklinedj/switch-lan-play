@@ -378,7 +378,7 @@ void lan_client_recv_thread_fn(void *arg)
 }
 
 /* ---------------------------------------------------------------------- */
-/*  Keepalive thread                                                        */
+/*  Keepalive thread (with exponential backoff + ping measurement)          */
 /* ---------------------------------------------------------------------- */
 void lan_client_keepalive_thread_fn(void *arg)
 {
@@ -386,13 +386,21 @@ void lan_client_keepalive_thread_fn(void *arg)
     LLOG(LLOG_INFO, "relay: keepalive thread started");
 
     int consecutive_fails = 0;
+    int backoff_seconds   = 10; /* initial sleep between keepalives */
+
+    lp->connection_healthy = true;
 
     while (lp->running) {
+        /* Measure RTT: timestamp before sendto */
+        uint64_t t_start = armGetSystemTick();
+
         uint8_t ka = LAN_CLIENT_TYPE_KEEPALIVE;
         int ret = relay_send_raw(lp, &ka, 1);
 
         if (ret < 0) {
             int err = errno;
+            lp->connection_healthy = false;
+
             /* EHOSTUNREACH / ENETUNREACH = route temporarily missing (WiFi
              * just reconnected).  The socket is fine; don't destroy it —
              * just wait for the routing table to recover. */
@@ -405,10 +413,12 @@ void lan_client_keepalive_thread_fn(void *arg)
             }
 
             consecutive_fails++;
-            /* After 6 consecutive failures (≈60s), try recreating the socket */
+
+            /* Exponential backoff: after 6 consecutive failures (≈60s),
+             * try recreating the socket.  Backoff doubles each cycle. */
             if (consecutive_fails >= 6) {
-                LLOG(LLOG_WARNING, "relay: %d keepalive failures, recreating socket...",
-                     consecutive_fails);
+                LLOG(LLOG_WARNING, "relay: %d keepalive failures (backoff=%ds), recreating socket...",
+                     consecutive_fails, backoff_seconds);
                 mutexLock(&lp->mutex);
                 lan_client_close(lp);
                 /* Brief pause so the BSD service can free the socket buffers
@@ -416,24 +426,41 @@ void lan_client_keepalive_thread_fn(void *arg)
                 svcSleepThread(2000000000LL);
                 if (lan_client_init(lp) == 0) {
                     LLOG(LLOG_INFO, "relay: socket recreated fd=%d", lp->relay_fd);
+                    lp->relay_reconnects++;
                 } else {
                     LLOG(LLOG_ERROR, "relay: failed to recreate socket");
                 }
                 mutexUnlock(&lp->mutex);
                 consecutive_fails = 0;
+
+                /* Exponential backoff: double the sleep, cap at 60s */
+                backoff_seconds = backoff_seconds * 2;
+                if (backoff_seconds > 60) backoff_seconds = 60;
             }
         } else {
-            if (consecutive_fails > 0) {
+            /* Keepalive succeeded */
+            if (!lp->connection_healthy || consecutive_fails > 0) {
                 LLOG(LLOG_INFO, "relay: keepalive OK after %d failures", consecutive_fails);
             }
+            lp->connection_healthy = true;
             consecutive_fails = 0;
+            backoff_seconds = 10; /* reset backoff on success */
+
+            /* Calculate approximate RTT in milliseconds.
+             * armGetSystemTickFreq() gives ticks/second on this core. */
+            uint64_t t_end = armGetSystemTick();
+            uint64_t freq  = armGetSystemTickFreq();
+            if (freq > 0) {
+                uint64_t elapsed_ms = ((t_end - t_start) * 1000) / freq;
+                lp->current_ping_ms = (uint32_t)(elapsed_ms > 9999 ? 9999 : elapsed_ms);
+            }
         }
 
-        /* Also toggle next_real_broadcast so every 1 s we do a real broadcast */
+        /* Also toggle next_real_broadcast so we do a real broadcast periodically */
         lp->next_real_broadcast = true;
 
-        /* Sleep for 10 seconds in 1-second chunks so we can terminate quickly on reboot/reload */
-        for (int i = 0; i < 10 && lp->running; i++) {
+        /* Sleep in 1-second chunks so we can terminate quickly on reboot/reload */
+        for (int i = 0; i < backoff_seconds && lp->running; i++) {
             svcSleepThread(1000000000LL); /* 1 second */
         }
     }
