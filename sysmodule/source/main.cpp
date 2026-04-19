@@ -756,16 +756,8 @@ static int run_service(void)
             fclose(sf);
         }
 
-        /* Check for reload trigger from the Homebrew App */
-        struct stat st;
-        if (stat("sdmc:/tmp/lanplay.reload", &st) == 0) {
-            LLOG(LLOG_INFO, "Reload trigger detected — restarting service...");
-            unlink("sdmc:/tmp/lanplay.reload");
-            
-            /* Give FS time to commit the config.ini changes from hbapp */
-            svcSleepThread(1000000000LL);
-            break; /* Exit inner loop to trigger reload */
-        }
+        /* Removed lanplay.reload trigger to prevent infinite reload loop bugs, 
+           relying solely on config.ini mtime instead. */
 
         /* Hot-reload: detect config.ini changes without needing .reload file */
         if (stat("sdmc:/config/lan-play/config.ini", &cfg_stat) == 0) {
