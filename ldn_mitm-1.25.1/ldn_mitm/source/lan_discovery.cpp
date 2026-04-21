@@ -13,6 +13,74 @@ namespace ams::mitm::ldn {
     const char *LANDiscovery::FakeSsid = "12345678123456781234567812345678";
     const LANDiscovery::LanEventFunc LANDiscovery::EmptyFunc = [](){};
 
+    static bool get_virtual_ip_from_lanplay_status(u32 *out_ip) {
+        constexpr const char StatusPath[] = "sdmc:/tmp/lanplay.status";
+
+        bool has_file = false;
+        if (R_FAILED(fs::HasFile(&has_file, StatusPath)) || !has_file) {
+            return false;
+        }
+
+        fs::FileHandle file;
+        if (R_FAILED(fs::OpenFile(&file, StatusPath, fs::OpenMode_Read))) {
+            return false;
+        }
+
+        s64 file_size = 0;
+        if (R_FAILED(GetFileSize(&file_size, file))) {
+            fs::CloseFile(file);
+            return false;
+        }
+
+        if (file_size <= 0 || file_size > 1024) {
+            fs::CloseFile(file);
+            return false;
+        }
+
+        char buffer[1025];
+        memset(buffer, 0, sizeof(buffer));
+        size_t read_size = static_cast<size_t>(file_size);
+
+        if (R_FAILED(fs::ReadFile(file, 0, buffer, read_size))) {
+            fs::CloseFile(file);
+            return false;
+        }
+
+        fs::CloseFile(file);
+
+        bool active = false;
+        bool have_ip = false;
+        u32 parsed_ip = 0;
+
+        char *saveptr = nullptr;
+        for (char *line = strtok_r(buffer, "\n", &saveptr);
+             line != nullptr;
+             line = strtok_r(nullptr, "\n", &saveptr)) {
+            if (strncmp(line, "active=", 7) == 0) {
+                active = (line[7] == '1');
+                continue;
+            }
+            if (strncmp(line, "my_ip=", 6) == 0) {
+                struct in_addr addr;
+                if (inet_aton(line + 6, &addr) != 0) {
+                    parsed_ip = ntohl(addr.s_addr);
+                    have_ip = true;
+                }
+            }
+        }
+
+        if (!active || !have_ip) {
+            return false;
+        }
+
+        if ((parsed_ip & 0xFFFF0000u) != 0x0A0D0000u) {
+            return false;
+        }
+
+        *out_ip = parsed_ip;
+        return true;
+    }
+
 
     int LanStation::onRead() {
         if (!this->socket) {
@@ -536,7 +604,14 @@ namespace ams::mitm::ldn {
         node->isConnected = 1;
         strcpy(node->userName, userConfig->userName);
         node->localCommunicationVersion = localCommunicationVersion;
-        node->ipv4Address = ipAddress;
+
+        u32 virtual_ip = 0;
+        if (get_virtual_ip_from_lanplay_status(&virtual_ip)) {
+            node->ipv4Address = virtual_ip;
+            LogFormat("LANDiscovery::getNodeInfo using lanplay virtual ip %x", virtual_ip);
+        } else {
+            node->ipv4Address = ipAddress;
+        }
 
         return 0;
     }

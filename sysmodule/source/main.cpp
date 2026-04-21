@@ -347,6 +347,21 @@ static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
 
+/* Power-state hints from applet callbacks. */
+static AppletHookCookie g_applet_hook_cookie;
+static volatile bool g_applet_hook_installed = false;
+static volatile bool g_applet_power_event = false;
+static volatile uint32_t g_applet_power_event_count = 0;
+static volatile uint32_t g_applet_power_restart_count = 0;
+
+static void applet_power_hook_cb(AppletHookType hook, void* param)
+{
+    (void)hook;
+    (void)param;
+    g_applet_power_event = true;
+    g_applet_power_event_count++;
+}
+
 /* -------------------------------------------------------------------------
  * Main
  * ---------------------------------------------------------------------- */
@@ -419,9 +434,27 @@ static void write_status_error(const char* error_msg) {
     }
 }
 
+static bool relay_route_probe(const struct sockaddr_in* dst)
+{
+    int probe_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (probe_fd < 0) return false;
+
+    uint8_t dummy = 0xFE;
+    ssize_t r = sendto(probe_fd, &dummy, 1, 0,
+                       (const struct sockaddr*)dst,
+                       sizeof(*dst));
+    close(probe_fd);
+    return r >= 0;
+}
+
 static int run_service(void)
 {
     if (R_SUCCEEDED(g_rc_fs)) ensure_tmp_dir();
+
+    if (!g_applet_hook_installed) {
+        appletHook(&g_applet_hook_cookie, applet_power_hook_cb, NULL);
+        g_applet_hook_installed = true;
+    }
 
     LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting ===");
 
@@ -698,6 +731,7 @@ static int run_service(void)
     /* ------------------------------------------------------------------ */
     /* 10. Service Loop (Restartable without reboot)                       */
     /* ------------------------------------------------------------------ */
+    int wifi_missing_checks = 0;
     while (true) {
         /* Write status for the Homebrew App to read */
         FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
@@ -705,11 +739,62 @@ static int run_service(void)
             fprintf(sf, "active=1\n");
             fprintf(sf, "error=\n");
             fprintf(sf, "relay=%s\n", cfg.relay_addr);
+            fprintf(sf, "my_ip=%s\n", cfg.my_ip);
+            fprintf(sf, "power_evt=%u\n", (unsigned)g_applet_power_event_count);
+            fprintf(sf, "power_restart=%u\n", (unsigned)g_applet_power_restart_count);
             fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
             fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
             fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
             fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
             fclose(sf);
+        }
+
+        /* Passive safety net: when suspend happens, WiFi/IP often drops.
+         * Restart the service so TAP/relay/bridge sockets are recreated. */
+        if (R_SUCCEEDED(g_rc_nifm)) {
+            u32 current_ip = 0;
+            nifmGetCurrentIpAddress(&current_ip);
+
+            if (current_ip == 0) {
+                wifi_missing_checks++;
+                if (wifi_missing_checks >= 2) {
+                    LLOG(LLOG_WARNING, "WiFi lost or console suspended — restarting service for recovery");
+                    write_status_error("Esperando WiFi tras reposo...");
+                    break;
+                }
+            } else {
+                if (current_ip != lp->wifi_ip) {
+                    LLOG(LLOG_WARNING,
+                         "WiFi IP changed after network resume (%08x -> %08x) — restarting service",
+                         lp->wifi_ip, current_ip);
+                    write_status_error("Red reanudada, reiniciando servicio...");
+                    break;
+                }
+                wifi_missing_checks = 0;
+            }
+        }
+
+        /* Explicit power-event handling from applet hook. */
+        if (g_applet_power_event) {
+            g_applet_power_event = false;
+
+            u32 wake_ip = 0;
+            if (R_SUCCEEDED(g_rc_nifm)) {
+                nifmGetCurrentIpAddress(&wake_ip);
+            }
+
+            if (wake_ip == 0 || wake_ip != lp->wifi_ip || !relay_route_probe(&lp->server_addr)) {
+                g_applet_power_restart_count++;
+                LLOG(LLOG_WARNING,
+                     "Suspend/resume network event detected (old=%08x new=%08x) — restarting service",
+                     lp->wifi_ip, wake_ip);
+                write_status_error("Reanudando red tras reposo...");
+                break;
+            } else {
+                LLOG(LLOG_INFO,
+                     "Suspend/resume event recovered without restart (ip=%08x relay route OK)",
+                     wake_ip);
+            }
         }
 
         /* Check for reload trigger from the Homebrew App */
