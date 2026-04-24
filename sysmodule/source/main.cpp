@@ -140,7 +140,7 @@ static int resolve_from_builtin_fallback(const char *host, struct in_addr *out_a
 void nx_log(int level, const char *fmt, ...)
 {
     if (level > LLOG_DEBUG) return;
-    
+
     char buf[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -150,7 +150,7 @@ void nx_log(int level, const char *fmt, ...)
 
     /* Atmosphere Debug Stream */
     svcOutputDebugString(buf, strlen(buf));
-    
+
     /* Persistent File Log - ROOT visibility */
     const char *log_path = "sdmc:/lan-play.log";
     struct stat st;
@@ -347,20 +347,10 @@ static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
 
-/* Power-state hints from applet callbacks. */
-static AppletHookCookie g_applet_hook_cookie;
-static volatile bool g_applet_hook_installed = false;
-static volatile bool g_applet_power_event = false;
-static volatile uint32_t g_applet_power_event_count = 0;
+/* Power-state hints. Applet callbacks are omitted because
+ * sysmodules lack an applet context. We rely on NIFM polling instead. */
+static volatile uint32_t g_applet_power_event_count = 0; /* Kept for compat with status format */
 static volatile uint32_t g_applet_power_restart_count = 0;
-
-static void applet_power_hook_cb(AppletHookType hook, void* param)
-{
-    (void)hook;
-    (void)param;
-    g_applet_power_event = true;
-    g_applet_power_event_count++;
-}
 
 /* -------------------------------------------------------------------------
  * Main
@@ -389,19 +379,9 @@ extern "C" void __appInit(void)
 
     g_rc_setsys = setsysInitialize();
 
-    /* Follow ldn_mitm init order: NIFM, BSD, then socket wrapper. */
-    g_rc_nifm = nifmInitialize(NifmServiceType_Admin);
-    if (R_FAILED(g_rc_nifm)) {
-        g_rc_nifm = nifmInitialize(NifmServiceType_User);
-    }
-
-    /* BSD + socket init (same pattern as ldn_mitm) */
-    g_rc_bsd = bsdInitialize(&g_bsd_config, g_socket_config.num_bsd_sessions, g_socket_config.bsd_service_type);
-    if (R_SUCCEEDED(g_rc_bsd)) {
-        g_rc_socket = socketInitialize(&g_socket_config);
-    } else {
-        g_rc_socket = g_rc_bsd;
-    }
+    /* NIFM and Sockets are intentionally NOT initialized here.
+     * They are dynamically initialized in the run_service loop to safely
+     * recover and recreate a clean stack from hibernation. */
 
     /* Close the service manager session now that lookups are done */
     smExit();
@@ -410,9 +390,6 @@ extern "C" void __appInit(void)
 extern "C" void __appExit(void)
 {
     fsdevUnmountAll();
-    nifmExit();
-    socketExit();
-    bsdExit();
     setsysExit();
     fsExit();
 }
@@ -451,12 +428,26 @@ static int run_service(void)
 {
     if (R_SUCCEEDED(g_rc_fs)) ensure_tmp_dir();
 
-    if (!g_applet_hook_installed) {
-        appletHook(&g_applet_hook_cookie, applet_power_hook_cb, NULL);
-        g_applet_hook_installed = true;
+    LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting stack ===");
+
+    /* Initialize network services dynamically so they can be torn down on sleep */
+    g_rc_nifm = nifmInitialize(NifmServiceType_Admin);
+    if (R_FAILED(g_rc_nifm)) {
+        g_rc_nifm = nifmInitialize(NifmServiceType_User);
     }
 
-    LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting ===");
+    g_rc_bsd = bsdInitialize(&g_bsd_config, g_socket_config.num_bsd_sessions, g_socket_config.bsd_service_type);
+    if (R_SUCCEEDED(g_rc_bsd)) {
+        g_rc_socket = socketInitialize(&g_socket_config);
+    } else {
+        g_rc_socket = g_rc_bsd;
+    }
+
+    if (R_FAILED(g_rc_socket) || R_FAILED(g_rc_nifm)) {
+        LLOG(LLOG_ERROR, "CRITICAL: Network services failed to initialize.");
+        write_status_error("Sysmodule red init failed!");
+        return 1;
+    }
 
     /* ------------------------------------------------------------------ */
     /* 0. Wait for Network to be fully established by Horizon (Boot time) */
@@ -502,7 +493,7 @@ static int run_service(void)
 
     if (nx_config_load(&cfg) != 0) {
         LLOG(LLOG_WARNING, "Config missing. Waiting for app to configure.");
-        
+
         /* Loop until a reload is triggered */
         while (true) {
             FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
@@ -774,35 +765,15 @@ static int run_service(void)
             }
         }
 
-        /* Explicit power-event handling from applet hook. */
-        if (g_applet_power_event) {
-            g_applet_power_event = false;
-
-            u32 wake_ip = 0;
-            if (R_SUCCEEDED(g_rc_nifm)) {
-                nifmGetCurrentIpAddress(&wake_ip);
-            }
-
-            if (wake_ip == 0 || wake_ip != lp->wifi_ip || !relay_route_probe(&lp->server_addr)) {
-                g_applet_power_restart_count++;
-                LLOG(LLOG_WARNING,
-                     "Suspend/resume network event detected (old=%08x new=%08x) — restarting service",
-                     lp->wifi_ip, wake_ip);
-                write_status_error("Reanudando red tras reposo...");
-                break;
-            } else {
-                LLOG(LLOG_INFO,
-                     "Suspend/resume event recovered without restart (ip=%08x relay route OK)",
-                     wake_ip);
-            }
-        }
+        /* We no longer use appletHook for power events since sysmodules have no applet context.
+         * The passive safety net above (nifmGetCurrentIpAddress == 0 or changing) handles hibernation adequately. */
 
         /* Check for reload trigger from the Homebrew App */
         struct stat st;
         if (stat("sdmc:/tmp/lanplay.reload", &st) == 0) {
             LLOG(LLOG_INFO, "Reload trigger detected — restarting service...");
             unlink("sdmc:/tmp/lanplay.reload");
-            
+
             /* Give FS time to commit the config.ini changes from hbapp */
             svcSleepThread(1000000000LL);
             break; /* Exit inner loop to trigger reload */
@@ -853,6 +824,16 @@ cleanup:
     ldn_bridge_close(lp);
     lan_play_free(lp);
 
+    /* Tear down network services completely so they can be rebuilt cleanly
+     * on the next run_service loop, resolving deep sleep/hibernation stack corruption. */
+    if (R_SUCCEEDED(g_rc_socket)) socketExit();
+    if (R_SUCCEEDED(g_rc_bsd)) bsdExit();
+    if (R_SUCCEEDED(g_rc_nifm)) nifmExit();
+
+    g_rc_socket = -1;
+    g_rc_bsd = -1;
+    g_rc_nifm = -1;
+
     /* Small delay before loop restart */
     svcSleepThread(500000000LL);
     return 1; /* returning 1 here would exit main, we need the loop outside */
@@ -883,9 +864,9 @@ int main(int argc, char *argv[])
     LLOG(LLOG_INFO, "  Socket: 0x%08X", g_rc_socket);
     LLOG(LLOG_INFO, "  NIFM:   0x%08X", g_rc_nifm);
 
-    if (R_FAILED(g_rc_socket) || R_FAILED(g_rc_fs) || R_FAILED(g_rc_bsd)) {
-        LLOG(LLOG_ERROR, "CRITICAL: A required service failed to initialize. Check your firmware/npdm.");
-        write_status_error("Sysmodule libnx init failed!");
+    if (R_FAILED(g_rc_fs)) {
+        LLOG(LLOG_ERROR, "CRITICAL: FS service failed to initialize.");
+        write_status_error("Sysmodule FS init failed!");
         svcSleepThread(5000000000LL);
         return 0;
     }
