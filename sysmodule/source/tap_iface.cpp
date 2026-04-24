@@ -71,8 +71,8 @@ int tap_init(struct lan_play *lp)
     bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
 
     struct timeval tv;
-    tv.tv_sec  = 1;
-    tv.tv_usec = 0;
+    tv.tv_sec  = 0;
+    tv.tv_usec = 100000; /* 100ms timeout so thread quickly sees lp->running == false on exit/hibernate */
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     lp->bpf_fd = fd;

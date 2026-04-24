@@ -243,7 +243,7 @@ int ldn_bridge_init(struct lan_play *lp)
         return -1;
     }
 
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 }; /* 200ms timeout */
     setsockopt(g_bridge_udp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     LLOG(LLOG_INFO, "ldn_bridge: UDP capture fd=%d on port %d", g_bridge_udp_fd, LDN_BRIDGE_PORT);

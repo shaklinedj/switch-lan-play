@@ -429,7 +429,7 @@ int lan_client_init(struct lan_play *lp)
     setsockopt(lp->relay_fd, SOL_SOCKET, SO_BROADCAST, &on, sizeof(on));
 
     /* Set receive timeout so thread can check lp->running */
-    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 200000 }; /* 200ms timeout */
     setsockopt(lp->relay_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     char srv_ip[INET_ADDRSTRLEN];

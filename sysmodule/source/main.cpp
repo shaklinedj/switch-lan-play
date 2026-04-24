@@ -379,6 +379,8 @@ extern "C" void __appInit(void)
 
     g_rc_setsys = setsysInitialize();
 
+    }
+
     /* NIFM and Sockets are intentionally NOT initialized here.
      * They are dynamically initialized in the run_service loop to safely
      * recover and recreate a clean stack from hibernation. */
@@ -723,25 +725,29 @@ static int run_service(void)
     /* 10. Service Loop (Restartable without reboot)                       */
     /* ------------------------------------------------------------------ */
     int wifi_missing_checks = 0;
+    int status_write_ticks = 0;
+
     while (true) {
-        /* Write status for the Homebrew App to read */
-        FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
-        if (sf) {
-            fprintf(sf, "active=1\n");
-            fprintf(sf, "error=\n");
-            fprintf(sf, "relay=%s\n", cfg.relay_addr);
-            fprintf(sf, "my_ip=%s\n", cfg.my_ip);
-            fprintf(sf, "power_evt=%u\n", (unsigned)g_applet_power_event_count);
-            fprintf(sf, "power_restart=%u\n", (unsigned)g_applet_power_restart_count);
-            fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
-            fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
-            fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
-            fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
-            fclose(sf);
+        /* Write status for the Homebrew App to read only every 10 seconds to save SD card wear */
+        if (status_write_ticks++ % 5 == 0) {
+            FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
+            if (sf) {
+                fprintf(sf, "active=1\n");
+                fprintf(sf, "error=\n");
+                fprintf(sf, "relay=%s\n", cfg.relay_addr);
+                fprintf(sf, "my_ip=%s\n", cfg.my_ip);
+                fprintf(sf, "power_evt=%u\n", (unsigned)g_applet_power_event_count);
+                fprintf(sf, "power_restart=%u\n", (unsigned)g_applet_power_restart_count);
+                fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
+                fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
+                fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
+                fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
+                fclose(sf);
+            }
         }
 
-        /* Passive safety net: when suspend happens, WiFi/IP often drops.
-         * Restart the service so TAP/relay/bridge sockets are recreated. */
+        /* Passive safety net fallback for Suspend/Resume detection */
+        /* Sysmodules have no applet context and PSM is for battery/charger events, so we rely on NIFM */
         if (R_SUCCEEDED(g_rc_nifm)) {
             u32 current_ip = 0;
             nifmGetCurrentIpAddress(&current_ip);
@@ -749,8 +755,10 @@ static int run_service(void)
             if (current_ip == 0) {
                 wifi_missing_checks++;
                 if (wifi_missing_checks >= 2) {
-                    LLOG(LLOG_WARNING, "WiFi lost or console suspended — restarting service for recovery");
+                    LLOG(LLOG_WARNING, "WiFi lost (fallback) — restarting service for recovery");
                     write_status_error("Esperando WiFi tras reposo...");
+                    g_applet_power_event_count++;
+                    g_applet_power_restart_count++;
                     break;
                 }
             } else {
@@ -759,14 +767,25 @@ static int run_service(void)
                          "WiFi IP changed after network resume (%08x -> %08x) — restarting service",
                          lp->wifi_ip, current_ip);
                     write_status_error("Red reanudada, reiniciando servicio...");
+                    g_applet_power_event_count++;
+                    g_applet_power_restart_count++;
                     break;
+                }
+
+                /* Additionally, probe route to relay periodically to detect broken network interfaces post-hibernation */
+                static int route_checks = 0;
+                if (++route_checks % 5 == 0) { /* Every 10 seconds */
+                    if (!relay_route_probe(&lp->server_addr)) {
+                        LLOG(LLOG_WARNING, "Relay route probe failed, interface may be dead — restarting service");
+                        write_status_error("Conexion inestable...");
+                        g_applet_power_event_count++;
+                        g_applet_power_restart_count++;
+                        break;
+                    }
                 }
                 wifi_missing_checks = 0;
             }
         }
-
-        /* We no longer use appletHook for power events since sysmodules have no applet context.
-         * The passive safety net above (nifmGetCurrentIpAddress == 0 or changing) handles hibernation adequately. */
 
         /* Check for reload trigger from the Homebrew App */
         struct stat st;
@@ -782,30 +801,6 @@ static int run_service(void)
         svcSleepThread(2000000000LL); /* 2 s check */
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 11. Cleanup (before reload or exit)                                 */
-    /* ------------------------------------------------------------------ */
-cleanup:
-    LLOG(LLOG_INFO, "Shutting down threads for reload...");
-    lp->running = false;
-
-    /* Close bridge sockets BEFORE waiting for the bridge threads.
-     * This unblocks recvfrom/accept so the threads can exit cleanly
-     * and avoid freezing the sysmodule on sleep/wake. */
-    ldn_bridge_close(lp);
-
-    if (ldn_tcp_started) {
-        threadWaitForExit(&lp->ldn_tcp_thread);
-        threadClose(&lp->ldn_tcp_thread);
-    }
-    if (ldn_udp_started) {
-        threadWaitForExit(&lp->ldn_udp_thread);
-        threadClose(&lp->ldn_udp_thread);
-    }
-    if (keepalive_started) {
-        threadWaitForExit(&keepalive_thread);
-        threadClose(&keepalive_thread);
-    }
     /* Close relay_fd BEFORE waiting for the relay recv thread.
      * This unblocks any recvfrom() immediately, allowing the thread
      * to observe lp->running == false and exit cleanly. */
