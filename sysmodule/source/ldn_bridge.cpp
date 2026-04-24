@@ -440,82 +440,33 @@ void ldn_bridge_udp_thread_fn(void *arg)
 /*  protocol with its own framing).                                     */
 /* ------------------------------------------------------------------ */
 
-/* Simple TCP relay: forward data between local ldn_mitm and the relay
- * server.  Each TCP connection gets its own goroutine-like handler. */
+#include <sys/select.h>
+#include <fcntl.h>
 
-/* Global state for the active TCP connection to allow the TAP layer
- * to feed returning UDP packets back into this TCP socket. */
-static int g_active_tcp_client_fd = -1;
+#define MAX_TCP_CLIENTS 8
+
+struct tcp_client {
+    int fd;
+    uint32_t target_ip; /* Host byte order */
+    bool active;
+};
+
+static struct tcp_client g_tcp_clients[MAX_TCP_CLIENTS];
+static Mutex g_tcp_clients_mutex;
 
 void ldn_bridge_tcp_proxy_recv(const void *payload, int payload_len)
 {
-    if (g_active_tcp_client_fd >= 0 && payload_len > 0) {
-        /* Send data back down the TCP connection to local ldn_mitm */
-        send(g_active_tcp_client_fd, payload, payload_len, 0);
-    }
-}
+    /* To correctly route incoming packets, we broadcast the payload
+     * to all active TCP clients. LDN protocol handles internal filtering. */
+    if (payload_len <= 0) return;
 
-static void tcp_proxy_handle_client(struct lan_play *lp, int client_fd)
-{
-    g_active_tcp_client_fd = client_fd;
-
-    /* Read 4-byte target IP (big-endian, host byte order value) */
-    uint32_t target_ip_be;
-    ssize_t r = recv(client_fd, &target_ip_be, 4, MSG_WAITALL);
-    if (r != 4) {
-        LLOG(LLOG_ERROR, "ldn_bridge: TCP proxy - failed to read target IP");
-        close(client_fd);
-        return;
-    }
-
-    uint32_t target_ip_ho = ntohl(target_ip_be);
-    LLOG(LLOG_INFO, "ldn_bridge: TCP proxy client, target=%08x", target_ip_ho);
-
-    /* For now, we encapsulate each TCP chunk as a UDP relay packet.
-     * The relay server will forward it to the target virtual IP.
-     * The remote sysmodule will extract and deliver to remote ldn_mitm. */
-
-    /* Set receive timeout on client socket */
-    struct timeval tv = { .tv_sec = 1, .tv_usec = 0 };
-    setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    uint8_t buf[2048];
-    uint8_t ip_pkt[2048 + 28];
-
-    uint32_t my_virtual_ip;
-    memcpy(&my_virtual_ip, lp->my_ip, 4);
-    my_virtual_ip = ntohl(my_virtual_ip);
-
-    while (lp->running) {
-        ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
-        if (n <= 0) {
-            if (n == 0) break; /* Connection closed */
-            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
-                /* Yield CPU to prevent busy waiting */
-                svcSleepThread(10000000LL); /* 10ms */
-                continue;
-            }
-            break;
-        }
-
-        /* Rewrite IPs in the LDN data being sent */
-        ldn_bridge_rewrite_ips(lp, buf, (int)n, true);
-
-        /* Wrap as IP/UDP and send to relay.
-         * Use TCP port 11452 as dst_port to indicate this is TCP-tunneled data */
-        int pkt_len = build_ip_udp(ip_pkt, sizeof(ip_pkt),
-                                   my_virtual_ip, target_ip_ho,
-                                   LDN_GAME_PORT + 1, /* src=11453 as marker for TCP */
-                                   LDN_GAME_PORT,
-                                   buf, (int)n);
-        if (pkt_len > 0) {
-            lan_client_send_ipv4(lp, ip_pkt + 16, ip_pkt, (uint16_t)pkt_len);
+    mutexLock(&g_tcp_clients_mutex);
+    for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+        if (g_tcp_clients[i].active && g_tcp_clients[i].fd >= 0) {
+            send(g_tcp_clients[i].fd, payload, payload_len, 0);
         }
     }
-
-    LLOG(LLOG_INFO, "ldn_bridge: TCP proxy client disconnected");
-    close(client_fd);
-    g_active_tcp_client_fd = -1;
+    mutexUnlock(&g_tcp_clients_mutex);
 }
 
 void ldn_bridge_tcp_thread_fn(void *arg)
@@ -529,38 +480,133 @@ void ldn_bridge_tcp_thread_fn(void *arg)
 
     LLOG(LLOG_INFO, "ldn_bridge: TCP proxy thread started (fd=%d)", g_bridge_tcp_fd);
 
-    /* Set accept timeout so we can check lp->running */
-    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-    setsockopt(g_bridge_tcp_fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    mutexInit(&g_tcp_clients_mutex);
+    for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+        g_tcp_clients[i].active = false;
+        g_tcp_clients[i].fd = -1;
+    }
+
+    /* Non-blocking accept */
+    int flags = fcntl(g_bridge_tcp_fd, F_GETFL, 0);
+    fcntl(g_bridge_tcp_fd, F_SETFL, flags | O_NONBLOCK);
 
     while (lp->running) {
-        struct sockaddr_in peer;
-        socklen_t peer_len = sizeof(peer);
+        fd_set readfds;
+        FD_ZERO(&readfds);
+        FD_SET(g_bridge_tcp_fd, &readfds);
+        int max_fd = g_bridge_tcp_fd;
 
-        int client_fd = accept(g_bridge_tcp_fd, (struct sockaddr *)&peer, &peer_len);
-        if (client_fd < 0) {
-            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
-                /* Yield CPU to prevent busy waiting */
-                svcSleepThread(10000000LL); /* 10ms */
-                continue;
+        mutexLock(&g_tcp_clients_mutex);
+        for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+            if (g_tcp_clients[i].active && g_tcp_clients[i].fd >= 0) {
+                FD_SET(g_tcp_clients[i].fd, &readfds);
+                if (g_tcp_clients[i].fd > max_fd) {
+                    max_fd = g_tcp_clients[i].fd;
+                }
             }
-            if (errno == ECONNABORTED) {
-                /* On Horizon, accept() may return ECONNABORTED instead of
-                 * EAGAIN when the SO_RCVTIMEO expires.  Sleep to avoid
-                 * flooding the log when no real client is connecting. */
-                svcSleepThread(500000000LL); /* 500 ms */
-                continue;
-            }
-            LLOG(LLOG_ERROR, "ldn_bridge: accept failed: %s", strerror(errno));
-            svcSleepThread(1000000000LL);
+        }
+        mutexUnlock(&g_tcp_clients_mutex);
+
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 200000; /* 200ms timeout */
+
+        int sr = select(max_fd + 1, &readfds, NULL, NULL, &tv);
+        if (sr < 0) {
+            if (errno == EINTR) continue;
+            LLOG(LLOG_ERROR, "ldn_bridge: TCP proxy select error: %s", strerror(errno));
+            svcSleepThread(100000000LL);
             continue;
         }
 
-        LLOG(LLOG_INFO, "ldn_bridge: TCP proxy accepted fd=%d", client_fd);
+        if (sr == 0) continue; /* Timeout */
 
-        /* Handle synchronously (ldn_mitm only makes 1 TCP connection at a time) */
-        tcp_proxy_handle_client(lp, client_fd);
+        /* Handle new connections */
+        if (FD_ISSET(g_bridge_tcp_fd, &readfds)) {
+            struct sockaddr_in peer;
+            socklen_t peer_len = sizeof(peer);
+            int new_fd = accept(g_bridge_tcp_fd, (struct sockaddr *)&peer, &peer_len);
+            if (new_fd >= 0) {
+                /* Read 4-byte target IP */
+                uint32_t target_ip_be;
+                ssize_t r = recv(new_fd, &target_ip_be, 4, MSG_WAITALL);
+                if (r == 4) {
+                    uint32_t target_ip_ho = ntohl(target_ip_be);
+
+                    /* Non-blocking mode for the client socket */
+                    int cflags = fcntl(new_fd, F_GETFL, 0);
+                    fcntl(new_fd, F_SETFL, cflags | O_NONBLOCK);
+
+                    mutexLock(&g_tcp_clients_mutex);
+                    bool added = false;
+                    for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+                        if (!g_tcp_clients[i].active) {
+                            g_tcp_clients[i].active = true;
+                            g_tcp_clients[i].fd = new_fd;
+                            g_tcp_clients[i].target_ip = target_ip_ho;
+                            added = true;
+                            LLOG(LLOG_INFO, "ldn_bridge: TCP client connected, target=%08x (slot %d)", target_ip_ho, i);
+                            break;
+                        }
+                    }
+                    mutexUnlock(&g_tcp_clients_mutex);
+
+                    if (!added) {
+                        LLOG(LLOG_WARNING, "ldn_bridge: max TCP clients reached, dropping");
+                        close(new_fd);
+                    }
+                } else {
+                    LLOG(LLOG_ERROR, "ldn_bridge: TCP proxy failed to read target IP");
+                    close(new_fd);
+                }
+            }
+        }
+
+        /* Handle existing clients */
+        mutexLock(&g_tcp_clients_mutex);
+        for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+            if (!g_tcp_clients[i].active) continue;
+
+            if (FD_ISSET(g_tcp_clients[i].fd, &readfds)) {
+                uint8_t buf[2048];
+                ssize_t n = recv(g_tcp_clients[i].fd, buf, sizeof(buf), 0);
+                if (n > 0) {
+                    /* Process payload */
+                    ldn_bridge_rewrite_ips(lp, buf, (int)n, true);
+
+                    uint32_t my_virtual_ip;
+                    memcpy(&my_virtual_ip, lp->my_ip, 4);
+                    my_virtual_ip = ntohl(my_virtual_ip);
+
+                    uint8_t ip_pkt[2048 + 28];
+                    int pkt_len = build_ip_udp(ip_pkt, sizeof(ip_pkt),
+                                               my_virtual_ip, g_tcp_clients[i].target_ip,
+                                               LDN_GAME_PORT + 1, /* src=11453 */
+                                               LDN_GAME_PORT,
+                                               buf, (int)n);
+                    if (pkt_len > 0) {
+                        lan_client_send_ipv4(lp, ip_pkt + 16, ip_pkt, (uint16_t)pkt_len);
+                    }
+                } else if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)) {
+                    /* Disconnect */
+                    LLOG(LLOG_INFO, "ldn_bridge: TCP client disconnected (slot %d)", i);
+                    close(g_tcp_clients[i].fd);
+                    g_tcp_clients[i].active = false;
+                    g_tcp_clients[i].fd = -1;
+                }
+            }
+        }
+        mutexUnlock(&g_tcp_clients_mutex);
     }
+
+    /* Cleanup */
+    mutexLock(&g_tcp_clients_mutex);
+    for (int i = 0; i < MAX_TCP_CLIENTS; i++) {
+        if (g_tcp_clients[i].active && g_tcp_clients[i].fd >= 0) {
+            close(g_tcp_clients[i].fd);
+        }
+    }
+    mutexUnlock(&g_tcp_clients_mutex);
 
     LLOG(LLOG_INFO, "ldn_bridge: TCP proxy thread exiting");
 }
