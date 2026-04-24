@@ -818,6 +818,11 @@ cleanup:
     LLOG(LLOG_INFO, "Shutting down threads for reload...");
     lp->running = false;
 
+    /* Close bridge sockets BEFORE waiting for the bridge threads.
+     * This unblocks recvfrom/accept so the threads can exit cleanly
+     * and avoid freezing the sysmodule on sleep/wake. */
+    ldn_bridge_close(lp);
+
     if (ldn_tcp_started) {
         threadWaitForExit(&lp->ldn_tcp_thread);
         threadClose(&lp->ldn_tcp_thread);

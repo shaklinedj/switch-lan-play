@@ -299,6 +299,9 @@ void lan_client_recv_thread_fn(void *arg)
                         LLOG(LLOG_ERROR, "relay: recvfrom error (%d): %s (fd=%d)",
                              err_count, strerror(errno), fd);
                     }
+                } else {
+                    /* Yield CPU to prevent busy waiting */
+                    svcSleepThread(10000000LL); /* 10ms */
                 }
             }
             continue;

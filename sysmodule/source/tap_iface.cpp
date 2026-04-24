@@ -244,8 +244,13 @@ void tap_recv_thread_fn(void *arg)
                              TAP_BUF_SIZE, 0,
                              (struct sockaddr *)&src_addr, &addr_len);
         if (n <= 0) {
-            if (n < 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) {
-                LLOG(LLOG_ERROR, "tap: recvfrom error: %s", strerror(errno));
+            if (n < 0) {
+                if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
+                    /* Yield CPU to prevent busy waiting */
+                    svcSleepThread(10000000LL); /* 10ms */
+                } else {
+                    LLOG(LLOG_ERROR, "tap: recvfrom error: %s", strerror(errno));
+                }
             }
             continue;
         }

@@ -375,8 +375,13 @@ void ldn_bridge_udp_thread_fn(void *arg)
         ssize_t n = recvfrom(g_bridge_udp_fd, recv_buf, sizeof(recv_buf), 0,
                              (struct sockaddr *)&from, &from_len);
         if (n <= 0) {
-            if (n < 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) {
-                LLOG(LLOG_ERROR, "ldn_bridge: recvfrom error: %s", strerror(errno));
+            if (n < 0) {
+                if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
+                    /* Yield CPU to prevent busy waiting */
+                    svcSleepThread(10000000LL); /* 10ms */
+                } else {
+                    LLOG(LLOG_ERROR, "ldn_bridge: recvfrom error: %s", strerror(errno));
+                }
             }
             continue;
         }
@@ -471,7 +476,11 @@ static void tcp_proxy_handle_client(struct lan_play *lp, int client_fd)
         ssize_t n = recv(client_fd, buf, sizeof(buf), 0);
         if (n <= 0) {
             if (n == 0) break; /* Connection closed */
-            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) continue;
+            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
+                /* Yield CPU to prevent busy waiting */
+                svcSleepThread(10000000LL); /* 10ms */
+                continue;
+            }
             break;
         }
 
@@ -515,7 +524,11 @@ void ldn_bridge_tcp_thread_fn(void *arg)
 
         int client_fd = accept(g_bridge_tcp_fd, (struct sockaddr *)&peer, &peer_len);
         if (client_fd < 0) {
-            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) continue;
+            if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
+                /* Yield CPU to prevent busy waiting */
+                svcSleepThread(10000000LL); /* 10ms */
+                continue;
+            }
             if (errno == ECONNABORTED) {
                 /* On Horizon, accept() may return ECONNABORTED instead of
                  * EAGAIN when the SO_RCVTIMEO expires.  Sleep to avoid
