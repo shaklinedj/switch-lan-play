@@ -443,8 +443,22 @@ void ldn_bridge_udp_thread_fn(void *arg)
 /* Simple TCP relay: forward data between local ldn_mitm and the relay
  * server.  Each TCP connection gets its own goroutine-like handler. */
 
+/* Global state for the active TCP connection to allow the TAP layer
+ * to feed returning UDP packets back into this TCP socket. */
+static int g_active_tcp_client_fd = -1;
+
+void ldn_bridge_tcp_proxy_recv(const void *payload, int payload_len)
+{
+    if (g_active_tcp_client_fd >= 0 && payload_len > 0) {
+        /* Send data back down the TCP connection to local ldn_mitm */
+        send(g_active_tcp_client_fd, payload, payload_len, 0);
+    }
+}
+
 static void tcp_proxy_handle_client(struct lan_play *lp, int client_fd)
 {
+    g_active_tcp_client_fd = client_fd;
+
     /* Read 4-byte target IP (big-endian, host byte order value) */
     uint32_t target_ip_be;
     ssize_t r = recv(client_fd, &target_ip_be, 4, MSG_WAITALL);
@@ -501,6 +515,7 @@ static void tcp_proxy_handle_client(struct lan_play *lp, int client_fd)
 
     LLOG(LLOG_INFO, "ldn_bridge: TCP proxy client disconnected");
     close(client_fd);
+    g_active_tcp_client_fd = -1;
 }
 
 void ldn_bridge_tcp_thread_fn(void *arg)

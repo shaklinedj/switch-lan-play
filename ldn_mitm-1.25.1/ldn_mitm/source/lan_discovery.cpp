@@ -775,6 +775,12 @@ namespace ams::mitm::ldn {
             return MAKERESULT(ModuleID, 31);
         }
 
+        /* If connecting via relay proxy, we must send the target IP first */
+        if ((hostIp & 0xFFFF0000u) == 0x0A0D0000u) {
+            uint32_t target_ip_be = htonl(hostIp);
+            ::send(this->tcp->getFd(), &target_ip_be, sizeof(target_ip_be), 0);
+        }
+
         NodeInfo myNode = {0};
         rc = this->getNodeInfo(&myNode, userConfig, localCommunicationVersion);
         if (R_FAILED(rc)) {

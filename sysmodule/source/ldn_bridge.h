@@ -64,6 +64,13 @@ int  ldn_bridge_inject(struct lan_play *lp, const void *udp_payload,
                        int payload_len, uint16_t src_port);
 
 /**
+ * Handle incoming TCP-tunneled UDP packets from the relay
+ * (dst_port == 11453). Unwraps the UDP payload and sends it to the
+ * active TCP proxy client socket.
+ */
+void ldn_bridge_tcp_proxy_recv(const void *payload, int payload_len);
+
+/**
  * Rewrite IP addresses in LDN ScanResp packets.
  * Replaces the real WiFi IP in NetworkInfo.nodes[].ipv4Address
  * with the virtual 10.13.x.x IP so remote players can route

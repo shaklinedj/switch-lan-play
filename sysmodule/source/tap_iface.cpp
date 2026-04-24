@@ -177,6 +177,15 @@ int tap_send_packet(struct lan_play *lp, const void *eth_frame, int len)
             /* Fall through to generic injection if bridge failed */
         }
 
+        /* === LDN Bridge: packets targeting port 11453 are TCP-tunneled data ===
+         * These are returning responses from the remote game host for a TCP
+         * connection (like SyncNetwork or actual gameplay data). Route them
+         * back to the active TCP proxy socket so ldn_mitm receives them. */
+        if (dst_port == LDN_BRIDGE_PORT) {
+            ldn_bridge_tcp_proxy_recv(udp_payload, payload_len);
+            return 0; /* Handled by TCP proxy */
+        }
+
         if (g_inject_fd < 0) return -1;
 
         /* Determine where to send:
