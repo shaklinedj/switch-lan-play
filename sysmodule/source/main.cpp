@@ -34,6 +34,7 @@
 /* bsd.h needed for bsdInitialize() — same init pattern as ldn_mitm */
 extern "C" {
 #include <switch/services/bsd.h>
+#include <switch/services/psc.h>
 }
 
 /* -------------------------------------------------------------------------
@@ -343,6 +344,7 @@ static const BsdInitConfig g_bsd_config = {
  * ---------------------------------------------------------------------- */
 static Result g_rc_fs     = 0;
 static Result g_rc_setsys = 0;
+static Result g_rc_pscm   = -1;
 static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
@@ -378,6 +380,7 @@ extern "C" void __appInit(void)
     }
 
     g_rc_setsys = setsysInitialize();
+    g_rc_pscm = pscmInitialize();
 
     }
 
@@ -392,6 +395,7 @@ extern "C" void __appInit(void)
 extern "C" void __appExit(void)
 {
     fsdevUnmountAll();
+    if (R_SUCCEEDED(g_rc_pscm)) pscmExit();
     setsysExit();
     fsExit();
 }
@@ -727,7 +731,51 @@ static int run_service(void)
     int wifi_missing_checks = 0;
     int status_write_ticks = 0;
 
+    /* Setup PSC (Power State Control) listener */
+    PscPmModule psc_module;
+    bool has_psc_module = false;
+
+    if (R_SUCCEEDED(g_rc_pscm)) {
+        /* Use a standard dependencies array (empty) to listen to power state changes */
+        u32 dependencies[] = {0};
+        /* We use an arbitrary module ID, but usually WlanSockets (25) or a custom ID like 127 is safe to just listen */
+        if (R_SUCCEEDED(pscmGetPmModule(&psc_module, PscPmModuleId_WlanSockets, dependencies, 0, true))) {
+            has_psc_module = true;
+            LLOG(LLOG_INFO, "PSC module initialized for power state tracking");
+        }
+    }
+
     while (true) {
+        /* Check PSC Power State Changes */
+        if (has_psc_module) {
+            /* Quick non-blocking wait to see if state changed */
+            if (R_SUCCEEDED(eventWait(&psc_module.event, 0))) {
+                PscPmState state;
+                u32 flags;
+                if (R_SUCCEEDED(pscPmModuleGetRequest(&psc_module, &state, &flags))) {
+                    LLOG(LLOG_INFO, "PSC Power State changed to: %d (flags: %u)", state, flags);
+
+                    /* Always acknowledge the state change so the system can proceed */
+                    pscPmModuleAcknowledge(&psc_module, state);
+
+                    /* If transitioning to sleep, or waking up, we break the loop to tear down/rebuild network */
+                    if (state == PscPmState_ReadySleep || state == PscPmState_ReadySleepCritical ||
+                        state == PscPmState_ReadyAwaken || state == PscPmState_ReadyAwakenCritical) {
+
+                        LLOG(LLOG_WARNING, "PSC Hibernation/Wake event detected — restarting network service.");
+                        write_status_error("Consola en reposo/despertando...");
+                        g_applet_power_event_count++;
+                        g_applet_power_restart_count++;
+
+                        if (has_psc_module) {
+                            pscPmModuleClose(&psc_module);
+                        }
+                        break; /* Break the loop to teardown network, we will recover on next iteration */
+                    }
+                }
+            }
+        }
+
         /* Write status for the Homebrew App to read only every 10 seconds to save SD card wear */
         if (status_write_ticks++ % 5 == 0) {
             FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
@@ -747,7 +795,7 @@ static int run_service(void)
         }
 
         /* Passive safety net fallback for Suspend/Resume detection */
-        /* Sysmodules have no applet context and PSM is for battery/charger events, so we rely on NIFM */
+        /* Sysmodules have no applet context, we rely on PSC power states and NIFM */
         if (R_SUCCEEDED(g_rc_nifm)) {
             u32 current_ip = 0;
             nifmGetCurrentIpAddress(&current_ip);
@@ -759,6 +807,7 @@ static int run_service(void)
                     write_status_error("Esperando WiFi tras reposo...");
                     g_applet_power_event_count++;
                     g_applet_power_restart_count++;
+                    if (has_psc_module) pscPmModuleClose(&psc_module);
                     break;
                 }
             } else {
@@ -769,6 +818,7 @@ static int run_service(void)
                     write_status_error("Red reanudada, reiniciando servicio...");
                     g_applet_power_event_count++;
                     g_applet_power_restart_count++;
+                    if (has_psc_module) pscPmModuleClose(&psc_module);
                     break;
                 }
 
@@ -780,6 +830,7 @@ static int run_service(void)
                         write_status_error("Conexion inestable...");
                         g_applet_power_event_count++;
                         g_applet_power_restart_count++;
+                        if (has_psc_module) pscPmModuleClose(&psc_module);
                         break;
                     }
                 }
@@ -795,6 +846,9 @@ static int run_service(void)
 
             /* Give FS time to commit the config.ini changes from hbapp */
             svcSleepThread(1000000000LL);
+            if (has_psc_module) {
+                pscPmModuleClose(&psc_module);
+            }
             break; /* Exit inner loop to trigger reload */
         }
 
