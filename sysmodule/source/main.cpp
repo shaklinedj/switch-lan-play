@@ -35,6 +35,7 @@
 extern "C" {
 #include <switch/services/bsd.h>
 #include <switch/services/psc.h>
+#include <switch/services/pm.h>
 }
 
 /* -------------------------------------------------------------------------
@@ -345,6 +346,7 @@ static const BsdInitConfig g_bsd_config = {
 static Result g_rc_fs     = 0;
 static Result g_rc_setsys = 0;
 static Result g_rc_pscm   = -1;
+static Result g_rc_pmdmnt = -1;
 static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
@@ -381,6 +383,7 @@ extern "C" void __appInit(void)
 
     g_rc_setsys = setsysInitialize();
     g_rc_pscm = pscmInitialize();
+    g_rc_pmdmnt = pmdmntInitialize();
 
     }
 
@@ -395,6 +398,7 @@ extern "C" void __appInit(void)
 extern "C" void __appExit(void)
 {
     fsdevUnmountAll();
+    if (R_SUCCEEDED(g_rc_pmdmnt)) pmdmntExit();
     if (R_SUCCEEDED(g_rc_pscm)) pscmExit();
     setsysExit();
     fsExit();
@@ -455,7 +459,33 @@ static int run_service(void)
         return 1;
     }
 
+        /* ------------------------------------------------------------------ */
+    /* 0. Wait for an Application (Game) to start                         */
     /* ------------------------------------------------------------------ */
+    /* If no game is running, do not initialize the network or sockets.
+     * This prevents lan-play from blocking the Wi-Fi settings menu! */
+    if (R_SUCCEEDED(g_rc_pmdmnt)) {
+        u64 app_pid = 0;
+        bool is_sleeping = false;
+
+        while (true) {
+            Result rc_app = pmdmntGetApplicationProcessId(&app_pid);
+            if (R_SUCCEEDED(rc_app) && app_pid != 0) {
+                if (is_sleeping) {
+                    LLOG(LLOG_INFO, "Game detected (PID: %lu) — waking up LAN Play sysmodule.", (unsigned long)app_pid);
+                }
+                break; /* A game is running, proceed to network setup */
+            }
+
+            if (!is_sleeping) {
+                LLOG(LLOG_INFO, "No game running — sysmodule sleeping to free network resources...");
+                is_sleeping = true;
+            }
+            svcSleepThread(1000000000LL); /* Check every 1 second */
+        }
+    }
+
+/* ------------------------------------------------------------------ */
     /* 0. Wait for Network to be fully established by Horizon (Boot time) */
     /* ------------------------------------------------------------------ */
     LLOG(LLOG_INFO, "Waiting for active Internet Connection...");
@@ -746,6 +776,19 @@ static int run_service(void)
     }
 
     while (true) {
+        /* Check if the user closed the game */
+        if (R_SUCCEEDED(g_rc_pmdmnt)) {
+            u64 app_pid = 0;
+            if (R_FAILED(pmdmntGetApplicationProcessId(&app_pid)) || app_pid == 0) {
+                LLOG(LLOG_INFO, "Game closed — tearing down network to sleep.");
+                write_status_error("Juego cerrado, durmiendo...");
+                g_applet_power_event_count++;
+                g_applet_power_restart_count++;
+                if (has_psc_module) pscPmModuleClose(&psc_module);
+                break;
+            }
+        }
+
         /* Check PSC Power State Changes */
         if (has_psc_module) {
             /* Quick non-blocking wait to see if state changed */
