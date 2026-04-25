@@ -71,8 +71,8 @@ int tap_init(struct lan_play *lp)
     bind(fd, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
 
     struct timeval tv;
-    tv.tv_sec  = 1;
-    tv.tv_usec = 0;
+    tv.tv_sec  = 0;
+    tv.tv_usec = 100000; /* 100ms timeout so thread quickly sees lp->running == false on exit/hibernate */
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     lp->bpf_fd = fd;
@@ -177,6 +177,15 @@ int tap_send_packet(struct lan_play *lp, const void *eth_frame, int len)
             /* Fall through to generic injection if bridge failed */
         }
 
+        /* === LDN Bridge: packets targeting port 11453 are TCP-tunneled data ===
+         * These are returning responses from the remote game host for a TCP
+         * connection (like SyncNetwork or actual gameplay data). Route them
+         * back to the active TCP proxy socket so ldn_mitm receives them. */
+        if (dst_port == LDN_BRIDGE_PORT) {
+            ldn_bridge_tcp_proxy_recv(udp_payload, payload_len);
+            return 0; /* Handled by TCP proxy */
+        }
+
         if (g_inject_fd < 0) return -1;
 
         /* Determine where to send:
@@ -244,8 +253,13 @@ void tap_recv_thread_fn(void *arg)
                              TAP_BUF_SIZE, 0,
                              (struct sockaddr *)&src_addr, &addr_len);
         if (n <= 0) {
-            if (n < 0 && errno != EAGAIN && errno != ETIMEDOUT && errno != EINTR) {
-                LLOG(LLOG_ERROR, "tap: recvfrom error: %s", strerror(errno));
+            if (n < 0) {
+                if (errno == EAGAIN || errno == ETIMEDOUT || errno == EINTR) {
+                    /* Yield CPU to prevent busy waiting */
+                    svcSleepThread(10000000LL); /* 10ms */
+                } else {
+                    LLOG(LLOG_ERROR, "tap: recvfrom error: %s", strerror(errno));
+                }
             }
             continue;
         }

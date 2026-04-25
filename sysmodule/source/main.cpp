@@ -34,6 +34,8 @@
 /* bsd.h needed for bsdInitialize() — same init pattern as ldn_mitm */
 extern "C" {
 #include <switch/services/bsd.h>
+#include <switch/services/psc.h>
+#include <switch/services/pm.h>
 }
 
 /* -------------------------------------------------------------------------
@@ -140,7 +142,7 @@ static int resolve_from_builtin_fallback(const char *host, struct in_addr *out_a
 void nx_log(int level, const char *fmt, ...)
 {
     if (level > LLOG_DEBUG) return;
-    
+
     char buf[1024];
     va_list ap;
     va_start(ap, fmt);
@@ -150,7 +152,7 @@ void nx_log(int level, const char *fmt, ...)
 
     /* Atmosphere Debug Stream */
     svcOutputDebugString(buf, strlen(buf));
-    
+
     /* Persistent File Log - ROOT visibility */
     const char *log_path = "sdmc:/lan-play.log";
     struct stat st;
@@ -343,24 +345,16 @@ static const BsdInitConfig g_bsd_config = {
  * ---------------------------------------------------------------------- */
 static Result g_rc_fs     = 0;
 static Result g_rc_setsys = 0;
+static Result g_rc_pscm   = -1;
+static Result g_rc_pmdmnt = -1;
 static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
 
-/* Power-state hints from applet callbacks. */
-static AppletHookCookie g_applet_hook_cookie;
-static volatile bool g_applet_hook_installed = false;
-static volatile bool g_applet_power_event = false;
-static volatile uint32_t g_applet_power_event_count = 0;
+/* Power-state hints. Applet callbacks are omitted because
+ * sysmodules lack an applet context. We rely on NIFM polling instead. */
+static volatile uint32_t g_applet_power_event_count = 0; /* Kept for compat with status format */
 static volatile uint32_t g_applet_power_restart_count = 0;
-
-static void applet_power_hook_cb(AppletHookType hook, void* param)
-{
-    (void)hook;
-    (void)param;
-    g_applet_power_event = true;
-    g_applet_power_event_count++;
-}
 
 /* -------------------------------------------------------------------------
  * Main
@@ -388,20 +382,14 @@ extern "C" void __appInit(void)
     }
 
     g_rc_setsys = setsysInitialize();
+    g_rc_pscm = pscmInitialize();
+    g_rc_pmdmnt = pmdmntInitialize();
 
-    /* Follow ldn_mitm init order: NIFM, BSD, then socket wrapper. */
-    g_rc_nifm = nifmInitialize(NifmServiceType_Admin);
-    if (R_FAILED(g_rc_nifm)) {
-        g_rc_nifm = nifmInitialize(NifmServiceType_User);
     }
 
-    /* BSD + socket init (same pattern as ldn_mitm) */
-    g_rc_bsd = bsdInitialize(&g_bsd_config, g_socket_config.num_bsd_sessions, g_socket_config.bsd_service_type);
-    if (R_SUCCEEDED(g_rc_bsd)) {
-        g_rc_socket = socketInitialize(&g_socket_config);
-    } else {
-        g_rc_socket = g_rc_bsd;
-    }
+    /* NIFM and Sockets are intentionally NOT initialized here.
+     * They are dynamically initialized in the run_service loop to safely
+     * recover and recreate a clean stack from hibernation. */
 
     /* Close the service manager session now that lookups are done */
     smExit();
@@ -410,9 +398,8 @@ extern "C" void __appInit(void)
 extern "C" void __appExit(void)
 {
     fsdevUnmountAll();
-    nifmExit();
-    socketExit();
-    bsdExit();
+    if (R_SUCCEEDED(g_rc_pmdmnt)) pmdmntExit();
+    if (R_SUCCEEDED(g_rc_pscm)) pscmExit();
     setsysExit();
     fsExit();
 }
@@ -451,14 +438,54 @@ static int run_service(void)
 {
     if (R_SUCCEEDED(g_rc_fs)) ensure_tmp_dir();
 
-    if (!g_applet_hook_installed) {
-        appletHook(&g_applet_hook_cookie, applet_power_hook_cb, NULL);
-        g_applet_hook_installed = true;
+    LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting stack ===");
+
+    /* Initialize network services dynamically so they can be torn down on sleep */
+    g_rc_nifm = nifmInitialize(NifmServiceType_Admin);
+    if (R_FAILED(g_rc_nifm)) {
+        g_rc_nifm = nifmInitialize(NifmServiceType_User);
     }
 
-    LLOG(LLOG_INFO, "=== switch-lan-play sysmodule v1.14 starting ===");
+    g_rc_bsd = bsdInitialize(&g_bsd_config, g_socket_config.num_bsd_sessions, g_socket_config.bsd_service_type);
+    if (R_SUCCEEDED(g_rc_bsd)) {
+        g_rc_socket = socketInitialize(&g_socket_config);
+    } else {
+        g_rc_socket = g_rc_bsd;
+    }
 
+    if (R_FAILED(g_rc_socket) || R_FAILED(g_rc_nifm)) {
+        LLOG(LLOG_ERROR, "CRITICAL: Network services failed to initialize.");
+        write_status_error("Sysmodule red init failed!");
+        return 1;
+    }
+
+        /* ------------------------------------------------------------------ */
+    /* 0. Wait for an Application (Game) to start                         */
     /* ------------------------------------------------------------------ */
+    /* If no game is running, do not initialize the network or sockets.
+     * This prevents lan-play from blocking the Wi-Fi settings menu! */
+    if (R_SUCCEEDED(g_rc_pmdmnt)) {
+        u64 app_pid = 0;
+        bool is_sleeping = false;
+
+        while (true) {
+            Result rc_app = pmdmntGetApplicationProcessId(&app_pid);
+            if (R_SUCCEEDED(rc_app) && app_pid != 0) {
+                if (is_sleeping) {
+                    LLOG(LLOG_INFO, "Game detected (PID: %lu) — waking up LAN Play sysmodule.", (unsigned long)app_pid);
+                }
+                break; /* A game is running, proceed to network setup */
+            }
+
+            if (!is_sleeping) {
+                LLOG(LLOG_INFO, "No game running — sysmodule sleeping to free network resources...");
+                is_sleeping = true;
+            }
+            svcSleepThread(1000000000LL); /* Check every 1 second */
+        }
+    }
+
+/* ------------------------------------------------------------------ */
     /* 0. Wait for Network to be fully established by Horizon (Boot time) */
     /* ------------------------------------------------------------------ */
     LLOG(LLOG_INFO, "Waiting for active Internet Connection...");
@@ -502,7 +529,7 @@ static int run_service(void)
 
     if (nx_config_load(&cfg) != 0) {
         LLOG(LLOG_WARNING, "Config missing. Waiting for app to configure.");
-        
+
         /* Loop until a reload is triggered */
         while (true) {
             FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
@@ -732,25 +759,86 @@ static int run_service(void)
     /* 10. Service Loop (Restartable without reboot)                       */
     /* ------------------------------------------------------------------ */
     int wifi_missing_checks = 0;
+    int status_write_ticks = 0;
+
+    /* Setup PSC (Power State Control) listener */
+    PscPmModule psc_module;
+    bool has_psc_module = false;
+
+    if (R_SUCCEEDED(g_rc_pscm)) {
+        /* Use a standard dependencies array (empty) to listen to power state changes */
+        u32 dependencies[] = {0};
+        /* We use an arbitrary module ID, but usually WlanSockets (25) or a custom ID like 127 is safe to just listen */
+        if (R_SUCCEEDED(pscmGetPmModule(&psc_module, PscPmModuleId_WlanSockets, dependencies, 0, true))) {
+            has_psc_module = true;
+            LLOG(LLOG_INFO, "PSC module initialized for power state tracking");
+        }
+    }
+
     while (true) {
-        /* Write status for the Homebrew App to read */
-        FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
-        if (sf) {
-            fprintf(sf, "active=1\n");
-            fprintf(sf, "error=\n");
-            fprintf(sf, "relay=%s\n", cfg.relay_addr);
-            fprintf(sf, "my_ip=%s\n", cfg.my_ip);
-            fprintf(sf, "power_evt=%u\n", (unsigned)g_applet_power_event_count);
-            fprintf(sf, "power_restart=%u\n", (unsigned)g_applet_power_restart_count);
-            fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
-            fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
-            fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
-            fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
-            fclose(sf);
+        /* Check if the user closed the game */
+        if (R_SUCCEEDED(g_rc_pmdmnt)) {
+            u64 app_pid = 0;
+            if (R_FAILED(pmdmntGetApplicationProcessId(&app_pid)) || app_pid == 0) {
+                LLOG(LLOG_INFO, "Game closed — tearing down network to sleep.");
+                write_status_error("Juego cerrado, durmiendo...");
+                g_applet_power_event_count++;
+                g_applet_power_restart_count++;
+                if (has_psc_module) pscPmModuleClose(&psc_module);
+                break;
+            }
         }
 
-        /* Passive safety net: when suspend happens, WiFi/IP often drops.
-         * Restart the service so TAP/relay/bridge sockets are recreated. */
+        /* Check PSC Power State Changes */
+        if (has_psc_module) {
+            /* Quick non-blocking wait to see if state changed */
+            if (R_SUCCEEDED(eventWait(&psc_module.event, 0))) {
+                PscPmState state;
+                u32 flags;
+                if (R_SUCCEEDED(pscPmModuleGetRequest(&psc_module, &state, &flags))) {
+                    LLOG(LLOG_INFO, "PSC Power State changed to: %d (flags: %u)", state, flags);
+
+                    /* Always acknowledge the state change so the system can proceed */
+                    pscPmModuleAcknowledge(&psc_module, state);
+
+                    /* If transitioning to sleep, or waking up, we break the loop to tear down/rebuild network */
+                    if (state == PscPmState_ReadySleep || state == PscPmState_ReadySleepCritical ||
+                        state == PscPmState_ReadyAwaken || state == PscPmState_ReadyAwakenCritical) {
+
+                        LLOG(LLOG_WARNING, "PSC Hibernation/Wake event detected — restarting network service.");
+                        write_status_error("Consola en reposo/despertando...");
+                        g_applet_power_event_count++;
+                        g_applet_power_restart_count++;
+
+                        if (has_psc_module) {
+                            pscPmModuleClose(&psc_module);
+                        }
+                        break; /* Break the loop to teardown network, we will recover on next iteration */
+                    }
+                }
+            }
+        }
+
+        /* Write status for the Homebrew App to read only every 10 seconds to save SD card wear */
+        if (status_write_ticks++ % 5 == 0) {
+            FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
+            if (sf) {
+                fprintf(sf, "active=1\n");
+                fprintf(sf, "error=\n");
+                fprintf(sf, "relay=%s\n", cfg.relay_addr);
+                fprintf(sf, "my_ip=%s\n", cfg.my_ip);
+                fprintf(sf, "power_evt=%u\n", (unsigned)g_applet_power_event_count);
+                fprintf(sf, "power_restart=%u\n", (unsigned)g_applet_power_restart_count);
+                fprintf(sf, "up_pkt=%llu\n", (unsigned long long)lp->upload_packet);
+                fprintf(sf, "up_bytes=%llu\n", (unsigned long long)lp->upload_byte);
+                fprintf(sf, "dn_pkt=%llu\n", (unsigned long long)lp->download_packet);
+                fprintf(sf, "dn_bytes=%llu\n", (unsigned long long)lp->download_byte);
+                fclose(sf);
+            }
+        }
+
+        /* Passive safety net fallback for Suspend/Resume detection */
+        /* Sysmodules have no applet context, we rely on PSC power states and NIFM */
         if (R_SUCCEEDED(g_rc_nifm)) {
             u32 current_ip = 0;
             nifmGetCurrentIpAddress(&current_ip);
@@ -758,8 +846,11 @@ static int run_service(void)
             if (current_ip == 0) {
                 wifi_missing_checks++;
                 if (wifi_missing_checks >= 2) {
-                    LLOG(LLOG_WARNING, "WiFi lost or console suspended — restarting service for recovery");
+                    LLOG(LLOG_WARNING, "WiFi lost (fallback) — restarting service for recovery");
                     write_status_error("Esperando WiFi tras reposo...");
+                    g_applet_power_event_count++;
+                    g_applet_power_restart_count++;
+                    if (has_psc_module) pscPmModuleClose(&psc_module);
                     break;
                 }
             } else {
@@ -768,32 +859,25 @@ static int run_service(void)
                          "WiFi IP changed after network resume (%08x -> %08x) — restarting service",
                          lp->wifi_ip, current_ip);
                     write_status_error("Red reanudada, reiniciando servicio...");
+                    g_applet_power_event_count++;
+                    g_applet_power_restart_count++;
+                    if (has_psc_module) pscPmModuleClose(&psc_module);
                     break;
                 }
+
+                /* Additionally, probe route to relay periodically to detect broken network interfaces post-hibernation */
+                static int route_checks = 0;
+                if (++route_checks % 5 == 0) { /* Every 10 seconds */
+                    if (!relay_route_probe(&lp->server_addr)) {
+                        LLOG(LLOG_WARNING, "Relay route probe failed, interface may be dead — restarting service");
+                        write_status_error("Conexion inestable...");
+                        g_applet_power_event_count++;
+                        g_applet_power_restart_count++;
+                        if (has_psc_module) pscPmModuleClose(&psc_module);
+                        break;
+                    }
+                }
                 wifi_missing_checks = 0;
-            }
-        }
-
-        /* Explicit power-event handling from applet hook. */
-        if (g_applet_power_event) {
-            g_applet_power_event = false;
-
-            u32 wake_ip = 0;
-            if (R_SUCCEEDED(g_rc_nifm)) {
-                nifmGetCurrentIpAddress(&wake_ip);
-            }
-
-            if (wake_ip == 0 || wake_ip != lp->wifi_ip || !relay_route_probe(&lp->server_addr)) {
-                g_applet_power_restart_count++;
-                LLOG(LLOG_WARNING,
-                     "Suspend/resume network event detected (old=%08x new=%08x) — restarting service",
-                     lp->wifi_ip, wake_ip);
-                write_status_error("Reanudando red tras reposo...");
-                break;
-            } else {
-                LLOG(LLOG_INFO,
-                     "Suspend/resume event recovered without restart (ip=%08x relay route OK)",
-                     wake_ip);
             }
         }
 
@@ -802,34 +886,18 @@ static int run_service(void)
         if (stat("sdmc:/tmp/lanplay.reload", &st) == 0) {
             LLOG(LLOG_INFO, "Reload trigger detected — restarting service...");
             unlink("sdmc:/tmp/lanplay.reload");
-            
+
             /* Give FS time to commit the config.ini changes from hbapp */
             svcSleepThread(1000000000LL);
+            if (has_psc_module) {
+                pscPmModuleClose(&psc_module);
+            }
             break; /* Exit inner loop to trigger reload */
         }
 
         svcSleepThread(2000000000LL); /* 2 s check */
     }
 
-    /* ------------------------------------------------------------------ */
-    /* 11. Cleanup (before reload or exit)                                 */
-    /* ------------------------------------------------------------------ */
-cleanup:
-    LLOG(LLOG_INFO, "Shutting down threads for reload...");
-    lp->running = false;
-
-    if (ldn_tcp_started) {
-        threadWaitForExit(&lp->ldn_tcp_thread);
-        threadClose(&lp->ldn_tcp_thread);
-    }
-    if (ldn_udp_started) {
-        threadWaitForExit(&lp->ldn_udp_thread);
-        threadClose(&lp->ldn_udp_thread);
-    }
-    if (keepalive_started) {
-        threadWaitForExit(&keepalive_thread);
-        threadClose(&keepalive_thread);
-    }
     /* Close relay_fd BEFORE waiting for the relay recv thread.
      * This unblocks any recvfrom() immediately, allowing the thread
      * to observe lp->running == false and exit cleanly. */
@@ -847,6 +915,16 @@ cleanup:
 
     ldn_bridge_close(lp);
     lan_play_free(lp);
+
+    /* Tear down network services completely so they can be rebuilt cleanly
+     * on the next run_service loop, resolving deep sleep/hibernation stack corruption. */
+    if (R_SUCCEEDED(g_rc_socket)) socketExit();
+    if (R_SUCCEEDED(g_rc_bsd)) bsdExit();
+    if (R_SUCCEEDED(g_rc_nifm)) nifmExit();
+
+    g_rc_socket = -1;
+    g_rc_bsd = -1;
+    g_rc_nifm = -1;
 
     /* Small delay before loop restart */
     svcSleepThread(500000000LL);
@@ -878,9 +956,9 @@ int main(int argc, char *argv[])
     LLOG(LLOG_INFO, "  Socket: 0x%08X", g_rc_socket);
     LLOG(LLOG_INFO, "  NIFM:   0x%08X", g_rc_nifm);
 
-    if (R_FAILED(g_rc_socket) || R_FAILED(g_rc_fs) || R_FAILED(g_rc_bsd)) {
-        LLOG(LLOG_ERROR, "CRITICAL: A required service failed to initialize. Check your firmware/npdm.");
-        write_status_error("Sysmodule libnx init failed!");
+    if (R_FAILED(g_rc_fs)) {
+        LLOG(LLOG_ERROR, "CRITICAL: FS service failed to initialize.");
+        write_status_error("Sysmodule FS init failed!");
         svcSleepThread(5000000000LL);
         return 0;
     }
