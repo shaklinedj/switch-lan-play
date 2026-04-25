@@ -207,7 +207,7 @@ done:
     int fd = pcap_fileno(p);
     struct ifreq buffer;
     memset(&buffer, 0x00, sizeof(buffer));
-    strcpy(buffer.ifr_name, d->name);
+    strncpy(buffer.ifr_name, d->name, sizeof(buffer.ifr_name) - 1);
     int result = ioctl(fd, SIOCGIFHWADDR, &buffer);
     if (result < 0)
     {
