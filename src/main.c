@@ -129,18 +129,6 @@ int parse_arguments(int argc, char **argv)
             CHECK_PARAM();
             options.socks5_server_addr = argv[i + 1];
             i++;
-        // } else if (!strcmp(arg, "--socks5-username")) {
-        //     CHECK_PARAM();
-        //     options.socks5_username = argv[i + 1];
-        //     i++;
-        // } else if (!strcmp(arg, "--socks5-password")) {
-        //     CHECK_PARAM();
-        //     options.socks5_password = argv[i + 1];
-        //     i++;
-        // } else if (!strcmp(arg, "--socks5-password-file")) {
-        //     CHECK_PARAM();
-        //     options.socks5_password_file = argv[i + 1];
-        //     i++;
         } else if (!strcmp(arg, "--list-if")) {
             options.list_if = true;
         } else if (!strcmp(arg, "--broadcast")) {
@@ -181,7 +169,6 @@ int parse_arguments(int argc, char **argv)
         } else {
             eprintf("--relay-server-addr is required\n");
         }
-        // return -1;
     }
     if (options.socks5_username) {
         if (!options.socks5_password && !options.socks5_password_file) {
@@ -245,7 +232,6 @@ void walk_cb(uv_handle_t* handle, void* arg)
     if (!uv_is_closing(handle)) {
         uv_close(handle, NULL);
     }
-    // LLOG(LLOG_DEBUG, "walk %d %p", handle->type, handle->data);
 }
 
 void lan_play_signal_cb(uv_signal_t *signal, int signum)
