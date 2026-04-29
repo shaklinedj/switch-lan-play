@@ -34,6 +34,7 @@
 /* bsd.h needed for bsdInitialize() — same init pattern as ldn_mitm */
 extern "C" {
 #include <switch/services/bsd.h>
+#include <switch/services/pmdmnt.h>
 }
 
 /* -------------------------------------------------------------------------
@@ -346,6 +347,21 @@ static Result g_rc_setsys = 0;
 static Result g_rc_bsd    = 0;
 static Result g_rc_socket = 0;
 static Result g_rc_nifm   = 0;
+static bool   g_pmdmnt_tried = false;
+static Result g_pmdmnt_rc = 0;
+
+static bool foreground_game_running(void)
+{
+    if (!g_pmdmnt_tried) {
+        g_pmdmnt_rc = pmdmntInitialize();
+        g_pmdmnt_tried = true;
+    }
+    if (R_FAILED(g_pmdmnt_rc)) return false;
+
+    u64 pid = 0;
+    Result rc = pmdmntGetApplicationProcessId(&pid);
+    return R_SUCCEEDED(rc) && pid != 0;
+}
 
 /* -------------------------------------------------------------------------
  * Main
@@ -395,6 +411,7 @@ extern "C" void __appInit(void)
 extern "C" void __appExit(void)
 {
     fsdevUnmountAll();
+    if (g_pmdmnt_tried && R_SUCCEEDED(g_pmdmnt_rc)) pmdmntExit();
     nifmExit();
     socketExit();
     bsdExit();
@@ -698,7 +715,56 @@ static int run_service(void)
     /* ------------------------------------------------------------------ */
     /* 10. Service Loop (Restartable without reboot)                       */
     /* ------------------------------------------------------------------ */
+    int net_down_checks = 0;
+    const int net_down_limit = 3; /* 3 * 2s = 6s without IP => suspend/restart */
+    const int no_game_limit = 3;  /* 3 * 2s = 6s without foreground game */
+    bool paused_for_idle = false;
+    int no_game_checks = 0;
     while (true) {
+        bool have_fg_signal = g_pmdmnt_tried || foreground_game_running();
+        if (have_fg_signal) {
+            bool game_running = foreground_game_running();
+            if (game_running) {
+                no_game_checks = 0;
+            } else if (++no_game_checks >= no_game_limit) {
+                LLOG(LLOG_INFO, "No foreground game detected -> pausing LAN-play");
+                FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
+                if (sf) {
+                    fprintf(sf, "active=0\n");
+                    fprintf(sf, "error=Sin juego en primer plano, LAN-play en reposo...\n");
+                    fclose(sf);
+                }
+                paused_for_idle = true;
+                break;
+            }
+        }
+
+        /* Detect sleep/hibernation or network loss.
+         * When Horizon drops WiFi/IP we release sockets/threads proactively
+         * so Atmosphere can suspend cleanly without stale network handles. */
+        u32 cur_ip = 0;
+        bool net_up = false;
+        if (R_SUCCEEDED(g_rc_nifm) && R_SUCCEEDED(nifmGetCurrentIpAddress(&cur_ip)) && cur_ip != 0) {
+            net_up = true;
+        }
+        if (!net_up) {
+            net_down_checks++;
+            if (net_down_checks >= net_down_limit) {
+                LLOG(LLOG_WARNING, "Network appears down/suspended (%d checks). Releasing LAN-play handles...",
+                     net_down_checks);
+                FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
+                if (sf) {
+                    fprintf(sf, "active=0\n");
+                    fprintf(sf, "error=Suspend/hibernacion detectada, liberando red...\n");
+                    fclose(sf);
+                }
+                break; /* cleanup + restart loop will wait for WiFi again */
+            }
+        } else {
+            net_down_checks = 0;
+            lp->wifi_ip = cur_ip; /* keep self-echo filter in sync after resume */
+        }
+
         /* Write status for the Homebrew App to read */
         FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
         if (sf) {
@@ -765,7 +831,7 @@ cleanup:
 
     /* Small delay before loop restart */
     svcSleepThread(500000000LL);
-    return 1; /* returning 1 here would exit main, we need the loop outside */
+    return paused_for_idle ? 2 : 1;
 }
 
 /* Updated main with the retry/reload loop */
@@ -802,7 +868,43 @@ int main(int argc, char *argv[])
 
     int restart_count = 0;
     while (true) {
-        if (run_service() == 0) break;
+        int rc = run_service();
+        if (rc == 0) break;
+        if (rc == 2) {
+            /* Fully asleep mode: do NOT re-open sockets/threads automatically.
+             * Wait for explicit wake trigger written by HB app/overlay:
+             *   sdmc:/tmp/lanplay.wake
+             * Also accept lanplay.reload as wake+reload signal. */
+            restart_count = 0;
+            while (true) {
+                FILE *sf = fopen("sdmc:/tmp/lanplay.status", "w");
+                if (sf) {
+                    fprintf(sf, "active=0\n");
+                    fprintf(sf, "error=LAN-play dormido. Abre un juego (auto) o crea sdmc:/tmp/lanplay.wake.\n");
+                    fclose(sf);
+                }
+
+                /* Auto-wake when a foreground game is running again. */
+                if (foreground_game_running()) {
+                    break;
+                }
+
+                struct stat stw;
+                if (stat("sdmc:/tmp/lanplay.wake", &stw) == 0) {
+                    unlink("sdmc:/tmp/lanplay.wake");
+                    break;
+                }
+
+                struct stat str;
+                if (stat("sdmc:/tmp/lanplay.reload", &str) == 0) {
+                    unlink("sdmc:/tmp/lanplay.reload");
+                    break;
+                }
+
+                svcSleepThread(2000000000LL);
+            }
+            continue;
+        }
         restart_count++;
         /* Exponential backoff: 3s, 6s, 12s, ... capped at 60s */
         int delay = 3;
