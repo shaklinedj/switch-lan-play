@@ -163,7 +163,18 @@ static int lan_client_process(struct lan_play *lp,
     if (IS_BROADCAST(dst, lp->packet_ctx.subnet_net, lp->packet_ctx.subnet_mask)) {
         return lan_client_on_broadcast(lp, packet, len);
     } else if (!arp_get_mac_by_ip(&lp->packet_ctx, dst_mac, dst)) {
-        return 0;
+        lp->arp_miss_drop_count++;
+        /* Recovery path: if ARP cache misses a unicast destination, try
+         * a broadcast-style fanout so peers can still discover/refresh ARP.
+         * Rate-limit logs to avoid SD spam in busy sessions. */
+        if (lp->arp_miss_drop_count <= 5 || (lp->arp_miss_drop_count % 50) == 0) {
+            LLOG(LLOG_WARNING,
+                 "relay: ARP miss for %u.%u.%u.%u (miss=%llu) -> broadcast fallback",
+                 dst[0], dst[1], dst[2], dst[3],
+                 (unsigned long long)lp->arp_miss_drop_count);
+        }
+        lp->arp_miss_broadcast_fallback_count++;
+        return lan_client_on_broadcast(lp, packet, len);
     }
 
     part.ptr  = packet;
@@ -209,6 +220,7 @@ static int lan_client_process_frag(struct lan_play *lp,
     }
     if (!frag) {
         LLOG(LLOG_WARNING, "relay: fragment buffer full, dropping");
+        lp->frag_drop_count++;
         return 0;
     }
 

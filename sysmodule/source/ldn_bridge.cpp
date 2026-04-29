@@ -380,7 +380,6 @@ void ldn_bridge_udp_thread_fn(void *arg)
             }
             continue;
         }
-
         /* Verify LDN magic */
         if (n < LDN_HEADER_SIZE) continue;
         struct ldn_packet_header *hdr = (struct ldn_packet_header *)recv_buf;

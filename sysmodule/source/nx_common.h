@@ -284,6 +284,9 @@ struct packet_ctx {
     uint64_t download_byte;
     uint64_t upload_packet;
     uint64_t download_packet;
+    uint64_t arp_miss_drop_count;
+    uint64_t arp_miss_broadcast_fallback_count;
+    uint64_t frag_drop_count;
 };
 
 /**

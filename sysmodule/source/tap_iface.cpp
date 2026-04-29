@@ -249,7 +249,6 @@ void tap_recv_thread_fn(void *arg)
             }
             continue;
         }
-
         /* Anti-echo: skip packets that originate from ourselves.
          * SOCK_RAW on Horizon may deliver outgoing broadcasts back to the
          * capture socket, which would create a relay loop.
